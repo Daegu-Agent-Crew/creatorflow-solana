@@ -1,5 +1,21 @@
 import { useState, type FormEvent } from 'react'
+import bs58 from 'bs58'
 import { registerAgent, requestChallenge, saveAgentSession, type AgentRole, type Challenge, type RegisteredAgent } from './api'
+
+type PhantomProvider = {
+  isPhantom?: boolean
+  connect: () => Promise<{ publicKey: { toString: () => string } }>
+  signMessage?: (message: Uint8Array, display?: string) => Promise<{ signature: Uint8Array } | Uint8Array>
+}
+
+function getPhantomProvider(): PhantomProvider | null {
+  const browserWindow = window as typeof window & {
+    phantom?: { solana?: PhantomProvider }
+    solana?: PhantomProvider
+  }
+  const provider = browserWindow.phantom?.solana ?? browserWindow.solana
+  return provider?.isPhantom ? provider : null
+}
 
 export function RegistrationForm() {
   const [role, setRole] = useState<AgentRole>('creator')
@@ -19,8 +35,17 @@ export function RegistrationForm() {
     setAgent(null)
     setMessage('')
     setSignature('')
-    if (nextRole === 'brand') setWallet('FWmGGKtczrdtWQJNdimApAfzBxEKdoDFwCFQtP9DEB5i')
+    if (nextRole === 'brand') {
+      setWallet('FWmGGKtczrdtWQJNdimApAfzBxEKdoDFwCFQtP9DEB5i')
+      setName((current) => current || 'Codex')
+    }
     else setWallet('')
+  }
+
+  function finishRegistration(registered: RegisteredAgent) {
+    saveAgentSession(registered)
+    setAgent(registered)
+    setMessage(`등록 완료: ${registered.agentId}`)
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -37,12 +62,33 @@ export function RegistrationForm() {
       } else {
         if (!signature.trim()) throw new Error('OpenClaw 지갑이 만든 서명을 입력해 주세요.')
         const registered = await registerAgent({ challengeId: challenge.challengeId, name, signature })
-        saveAgentSession(registered)
-        setAgent(registered)
-        setMessage(`등록 완료: ${registered.agentId}`)
+        finishRegistration(registered)
       }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '요청을 처리하지 못했습니다.')
+    } finally {
+      setPending(false)
+    }
+  }
+
+  async function signAndRegisterWithPhantom() {
+    if (!challenge) return
+    setPending(true)
+    setMessage('')
+    try {
+      const provider = getPhantomProvider()
+      if (!provider) throw new Error('Brave에 Phantom 확장 프로그램을 설치하고 이 페이지에서 활성화해 주세요.')
+      if (typeof provider.signMessage !== 'function') throw new Error('현재 Phantom 환경은 메시지 서명을 지원하지 않습니다.')
+      const connected = await provider.connect()
+      const connectedWallet = connected.publicKey.toString()
+      if (connectedWallet !== wallet.trim()) throw new Error(`Phantom 지갑이 다릅니다. ${wallet.slice(0, 6)}…${wallet.slice(-4)} 주소를 선택해 주세요.`)
+      const signed = await provider.signMessage(new TextEncoder().encode(challenge.message), 'utf8')
+      const signatureBytes = signed instanceof Uint8Array ? signed : signed.signature
+      const encodedSignature = bs58.encode(signatureBytes)
+      setSignature(encodedSignature)
+      finishRegistration(await registerAgent({ challengeId: challenge.challengeId, name, signature: encodedSignature }))
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Phantom 서명 등록을 완료하지 못했습니다.')
     } finally {
       setPending(false)
     }
@@ -85,6 +131,7 @@ export function RegistrationForm() {
             {challenge ? (
               <>
                 <div className="challenge-box"><div><strong>OpenClaw 서명 문구</strong><button className="copy-button" type="button" onClick={copyChallenge}>복사</button></div><pre>{challenge.message}</pre><small>{new Date(challenge.expiresAt).toLocaleString('ko-KR')}까지 유효</small></div>
+                <button className="phantom-button full-button" type="button" onClick={signAndRegisterWithPhantom} disabled={pending}>Phantom으로 서명하고 등록</button>
                 <label className="field"><span>서명 결과 (Base58)</span><input name="signature" value={signature} onChange={(event) => setSignature(event.target.value)} placeholder="OpenClaw 지갑이 만든 서명" /></label>
               </>
             ) : (
