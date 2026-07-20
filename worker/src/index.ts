@@ -56,6 +56,15 @@ function audit(env: Env, input: { agentId?: string | null; campaignId?: string |
     .bind(crypto.randomUUID(), input.agentId ?? null, input.campaignId ?? null, input.eventType, JSON.stringify(input.payload), input.createdAt)
 }
 
+function parseAuditPayload(value: string): JsonRecord {
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as JsonRecord : {}
+  } catch {
+    return {}
+  }
+}
+
 async function createChallenge(request: Request, env: Env) {
   const body = await readBody(request)
   const role = parseRole(body?.role)
@@ -134,6 +143,40 @@ async function listCampaigns(request: Request, env: Env) {
   return json(request, env, { campaigns: rows.results })
 }
 
+async function listAgents(request: Request, env: Env) {
+  const rows = await env.DB.prepare('SELECT id, name, role, wallet, created_at FROM agents ORDER BY created_at DESC LIMIT 100').all<AgentRow & { created_at: string }>()
+  return json(request, env, { agents: rows.results.map((agent) => ({ agentId: agent.id, name: agent.name, role: agent.role, wallet: agent.wallet, createdAt: agent.created_at })) })
+}
+
+async function listAuditEvents(request: Request, env: Env) {
+  const rows = await env.DB.prepare(`SELECT e.id, e.agent_id, a.name AS agent_name, a.role AS agent_role, e.campaign_id, c.title AS campaign_title, e.event_type, e.payload, e.created_at
+    FROM audit_events e
+    LEFT JOIN agents a ON a.id = e.agent_id
+    LEFT JOIN campaigns c ON c.id = e.campaign_id
+    ORDER BY e.created_at DESC LIMIT 100`).all<{
+      id: string
+      agent_id: string | null
+      agent_name: string | null
+      agent_role: 'brand' | 'creator' | null
+      campaign_id: string | null
+      campaign_title: string | null
+      event_type: string
+      payload: string
+      created_at: string
+    }>()
+  return json(request, env, { events: rows.results.map((event) => ({
+    eventId: event.id,
+    agentId: event.agent_id,
+    agentName: event.agent_name,
+    agentRole: event.agent_role,
+    campaignId: event.campaign_id,
+    campaignTitle: event.campaign_title,
+    eventType: event.event_type,
+    payload: parseAuditPayload(event.payload),
+    createdAt: event.created_at,
+  })) })
+}
+
 async function getCampaign(request: Request, env: Env, campaignId: string) {
   const campaign = await env.DB.prepare('SELECT id, title, brand_agent_id, creator_agent_id, status, accepted_offer_id, created_at, updated_at FROM campaigns WHERE id = ?').bind(campaignId).first<CampaignRow>()
   if (!campaign) return error(request, env, 'NOT_FOUND', '캠페인을 찾을 수 없습니다.', 404)
@@ -210,6 +253,8 @@ export default {
     if (request.method === 'GET' && url.pathname === '/api/health') return json(request, env, { ok: true, service: 'creatorflow-api' })
     if (request.method === 'POST' && url.pathname === '/api/auth/challenge') return createChallenge(request, env)
     if (request.method === 'POST' && url.pathname === '/api/agents/register') return registerAgent(request, env)
+    if (request.method === 'GET' && url.pathname === '/api/agents') return listAgents(request, env)
+    if (request.method === 'GET' && url.pathname === '/api/audit') return listAuditEvents(request, env)
     if (request.method === 'GET' && url.pathname === '/api/campaigns') return listCampaigns(request, env)
     if (request.method === 'POST' && url.pathname === '/api/campaigns') return createCampaign(request, env)
     const campaignMatch = url.pathname.match(/^\/api\/campaigns\/([^/]+)$/)
