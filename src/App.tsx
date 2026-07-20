@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import './App.css'
 import { RegistrationForm } from './RegistrationForm'
+import { NegotiationPanel } from './NegotiationPanel'
 
 type View = 'campaign' | 'agents' | 'activity'
 
@@ -92,6 +93,7 @@ function CampaignView({ onRegister }: { onRegister: () => void }) {
           </div>
         </aside>
       </div>
+      <NegotiationPanel />
     </section>
   )
 }

@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { registerAgent, requestChallenge, type AgentRole, type Challenge, type RegisteredAgent } from './api'
+import { registerAgent, requestChallenge, saveAgentSession, type AgentRole, type Challenge, type RegisteredAgent } from './api'
 
 export function RegistrationForm() {
   const [role, setRole] = useState<AgentRole>('creator')
@@ -37,6 +37,7 @@ export function RegistrationForm() {
       } else {
         if (!signature.trim()) throw new Error('OpenClaw 지갑이 만든 서명을 입력해 주세요.')
         const registered = await registerAgent({ challengeId: challenge.challengeId, name, signature })
+        saveAgentSession(registered)
         setAgent(registered)
         setMessage(`등록 완료: ${registered.agentId}`)
       }

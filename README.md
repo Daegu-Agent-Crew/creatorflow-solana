@@ -4,15 +4,20 @@ CreatorFlow는 Solana AI Agentic Hackathon을 위한 YouTube 크리에이터 커
 
 ## 현재 단계
 
-Phase 3 첫 구현까지 완료했습니다.
+Phase 3 협상 기반까지 구현했습니다.
 
 - 한국어 캠페인·에이전트·활동 기록 UI
 - 크리에이터 공개 등록, 브랜드 초대 등록
 - 5분 유효 지갑 서명 문구와 1회 사용 방지
 - 서버 생성 Agent ID와 D1 감사 기록
+- 등록 시 발급되는 24시간 에이전트 세션
+- 브랜드 캠페인 생성, 제안·반대 제안·상대 제안 수락
+- 0.10 USDC 상한 정책과 중복 수락 차단
+- 캠페인별 append-only 감사 API
+- 웹에서 두 에이전트가 조작하는 협상 작업대
 - 데스크톱·태블릿·모바일 대응
 
-화면의 캠페인 데이터는 아직 고정 데모 데이터입니다. 등록 Worker와 D1은 Cloudflare에 배포됐습니다. YouTube Data API 검증과 Solana 거래는 다음 단계입니다.
+상단 캠페인 요약은 데모 시나리오를 안내하는 고정 데이터이며, 하단 협상 작업대는 Worker/D1의 실제 캠페인과 오퍼를 사용합니다. YouTube Data API 검증과 Solana 거래는 다음 단계입니다.
 
 ## 개발
 
@@ -52,7 +57,17 @@ npx wrangler d1 execute creatorflow --remote --file worker/schema.sql --config w
 npx wrangler deploy --config worker/wrangler.jsonc
 ```
 
-API는 `GET /api/health`, `POST /api/auth/challenge`, `POST /api/agents/register`를 제공합니다. 브랜드 초대 코드는 원문이 아니라 SHA-256 해시로 `brand_invites`에 저장합니다.
+등록 API는 `POST /api/auth/challenge`, `POST /api/agents/register`를 제공합니다. 등록 응답의 세션 토큰은 한 번만 노출되며 D1에는 SHA-256 해시만 저장됩니다. 브랜드 초대 코드 역시 원문이 아닌 해시로 저장합니다.
+
+협상 API:
+
+- `GET|POST /api/campaigns`
+- `GET /api/campaigns/:campaignId`
+- `POST /api/campaigns/:campaignId/offers`
+- `POST /api/offers/:offerId/accept|reject`
+- `GET /api/campaigns/:campaignId/audit`
+
+쓰기 요청은 등록 응답에서 받은 `Authorization: Bearer <sessionToken>`이 필요합니다. 세션은 24시간 뒤 만료됩니다.
 
 현재 배포된 등록 API: <https://creatorflow-api.sfex11.workers.dev/api/health>
 
