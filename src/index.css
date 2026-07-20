@@ -1,7 +1,7 @@
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600;700&family=Manrope:wght@400;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600;700&family=Noto+Sans+KR:wght@400;500;600;700;800&display=swap');
 
 :root {
-  font-family: 'Manrope', system-ui, sans-serif;
+  font-family: 'Noto Sans KR', sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -10,4 +10,4 @@
 
 body { margin: 0; min-width: 320px; min-height: 100vh; }
 button { font-family: inherit; }
-button:focus-visible, input:focus-visible { outline: 3px solid #6f5cff; outline-offset: 2px; }
+button:focus-visible, input:focus-visible { outline: 3px solid #58871f; outline-offset: 2px; }
