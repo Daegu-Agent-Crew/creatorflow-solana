@@ -1,48 +1,6 @@
-CREATE TABLE IF NOT EXISTS brand_invites (
-  id TEXT PRIMARY KEY,
-  code_hash TEXT NOT NULL UNIQUE,
-  expires_at TEXT NOT NULL,
-  used_at TEXT,
-  used_by_agent_id TEXT,
-  created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS auth_challenges (
-  id TEXT PRIMARY KEY,
-  wallet TEXT NOT NULL,
-  role TEXT NOT NULL CHECK (role IN ('brand', 'creator')),
-  message TEXT NOT NULL,
-  invite_id TEXT,
-  expires_at TEXT NOT NULL,
-  used_at TEXT,
-  created_at TEXT NOT NULL,
-  FOREIGN KEY (invite_id) REFERENCES brand_invites(id)
-);
-
-CREATE TABLE IF NOT EXISTS agents (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  role TEXT NOT NULL CHECK (role IN ('brand', 'creator')),
-  wallet TEXT NOT NULL,
-  challenge_id TEXT NOT NULL UNIQUE,
-  invite_id TEXT UNIQUE,
-  session_token_hash TEXT UNIQUE,
-  session_expires_at TEXT,
-  created_at TEXT NOT NULL,
-  UNIQUE (wallet, role),
-  FOREIGN KEY (challenge_id) REFERENCES auth_challenges(id),
-  FOREIGN KEY (invite_id) REFERENCES brand_invites(id)
-);
-
-CREATE TABLE IF NOT EXISTS audit_events (
-  id TEXT PRIMARY KEY,
-  agent_id TEXT,
-  campaign_id TEXT,
-  event_type TEXT NOT NULL,
-  payload TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  FOREIGN KEY (agent_id) REFERENCES agents(id)
-);
+ALTER TABLE agents ADD COLUMN session_token_hash TEXT;
+ALTER TABLE agents ADD COLUMN session_expires_at TEXT;
+ALTER TABLE audit_events ADD COLUMN campaign_id TEXT;
 
 CREATE TABLE IF NOT EXISTS campaigns (
   id TEXT PRIMARY KEY,
@@ -86,8 +44,7 @@ CREATE TABLE IF NOT EXISTS deal_acceptances (
   FOREIGN KEY (accepted_by_agent_id) REFERENCES agents(id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_challenges_wallet ON auth_challenges(wallet, created_at);
-CREATE INDEX IF NOT EXISTS idx_audit_agent ON audit_events(agent_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_session_token ON agents(session_token_hash) WHERE session_token_hash IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_campaigns_agents ON campaigns(brand_agent_id, creator_agent_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_offers_campaign ON offers(campaign_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_campaign ON audit_events(campaign_id, created_at);
