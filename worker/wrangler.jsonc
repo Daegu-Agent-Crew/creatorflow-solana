@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "creatorflow-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-20",
+  "vars": {
+    "ALLOWED_ORIGIN": "https://daegu-agent-crew.github.io"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "creatorflow",
+      "database_id": "e0f0b488-9240-4263-9aa7-0b38bfd4432f"
+    }
+  ]
+}

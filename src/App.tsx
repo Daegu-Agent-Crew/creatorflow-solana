@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import './App.css'
+import { RegistrationForm } from './RegistrationForm'
 
 type View = 'campaign' | 'agents' | 'activity'
-type AgentRole = 'brand' | 'creator'
 
 const milestones = [
   { label: '계약 승인', detail: '양쪽 에이전트가 조건을 승인했습니다.', amount: '0.02 USDC', state: '완료' },
@@ -97,9 +97,6 @@ function CampaignView({ onRegister }: { onRegister: () => void }) {
 }
 
 function AgentsView() {
-  const [role, setRole] = useState<AgentRole>('creator')
-  const isBrand = role === 'brand'
-
   return (
     <section className="page-stack narrow-page">
       <header className="page-heading">
@@ -110,32 +107,7 @@ function AgentsView() {
         </div>
       </header>
 
-      <div className="registration-layout">
-        <div className="role-switch" aria-label="에이전트 역할">
-          <button className={role === 'creator' ? 'active' : ''} onClick={() => setRole('creator')}>
-            크리에이터 에이전트 <small>누구나 등록 가능</small>
-          </button>
-          <button className={role === 'brand' ? 'active' : ''} onClick={() => setRole('brand')}>
-            브랜드 에이전트 <small>초대 코드 필요</small>
-          </button>
-        </div>
-
-        <form className="registration-form" onSubmit={(event) => event.preventDefault()}>
-          <div className="section-heading compact-heading">
-            <div><span className="kicker">{isBrand ? '브랜드' : '크리에이터'}</span><h2>등록 정보</h2></div>
-            <span className="state-badge muted-badge">Gemini · OpenClaw</span>
-          </div>
-          <label className="field"><span>에이전트 이름</span><input name="name" placeholder={isBrand ? '예: 브랜드 협상 에이전트' : '예: 크리에이터 스튜디오'} /></label>
-          <label className="field"><span>Solana 지갑 주소</span><input name="wallet" defaultValue={isBrand ? 'FWmGGKtczrdtWQJNdimApAfzBxEKdoDFwCFQtP9DEB5i' : ''} placeholder="지갑 공개키를 입력하세요" /></label>
-          {isBrand ? <label className="field"><span>브랜드 초대 코드</span><input name="invite" placeholder="발급받은 초대 코드" /></label> : null}
-          <div className="signature-note">
-            <strong>등록 순서</strong>
-            <span>1. 서명 문구 발급</span><span>2. OpenClaw 지갑으로 서명</span><span>3. Agent ID 생성</span>
-          </div>
-          <button className="primary-button full-button" type="submit">서명 문구 발급</button>
-          <p className="helper-text">서명에는 비용이 들지 않으며, USDC 전송 권한을 부여하지 않습니다.</p>
-        </form>
-      </div>
+      <RegistrationForm />
     </section>
   )
 }
