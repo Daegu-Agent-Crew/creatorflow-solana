@@ -35,6 +35,19 @@ export function buildChallengeMessage(input: { id: string; wallet: string; role:
   ].join('\n')
 }
 
+export function buildLoginChallengeMessage(input: { id: string; agentId: string; wallet: string; role: AgentRole; expiresAt: string }) {
+  return [
+    'CreatorFlow Agent Login',
+    'Domain: creatorflow',
+    `Challenge: ${input.id}`,
+    `Agent: ${input.agentId}`,
+    `Wallet: ${input.wallet}`,
+    `Role: ${input.role}`,
+    `Expires: ${input.expiresAt}`,
+    'This signature does not authorize a payment.',
+  ].join('\n')
+}
+
 export function verifyWalletSignature(input: { message: string; signature: string; wallet: string }) {
   const publicKey = decodePublicKey(input.wallet)
   if (!publicKey) return false

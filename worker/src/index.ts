@@ -1,4 +1,4 @@
-import { buildChallengeMessage, decodePublicKey, isValidAgentName, parseRole, sha256, verifyWalletSignature } from './security'
+import { buildChallengeMessage, buildLoginChallengeMessage, decodePublicKey, isValidAgentName, parseRole, sha256, verifyWalletSignature } from './security'
 import { parseOfferKind, validateOfferTerms } from './negotiation'
 
 interface Env {
@@ -120,6 +120,56 @@ async function registerAgent(request: Request, env: Env) {
     throw error
   }
   return json(request, env, { agentId, name, role: challenge.role, wallet: challenge.wallet, sessionToken, sessionExpiresAt, createdAt }, 201)
+}
+
+async function createLoginChallenge(request: Request, env: Env) {
+  const body = await readBody(request)
+  const role = parseRole(body?.role)
+  const wallet = typeof body?.wallet === 'string' ? body.wallet.trim() : ''
+  if (!role || !decodePublicKey(wallet)) return error(request, env, 'INVALID_LOGIN', '역할 또는 Solana 지갑 주소가 올바르지 않습니다.', 400)
+
+  const agent = await env.DB.prepare('SELECT id, name, role, wallet FROM agents WHERE wallet = ? AND role = ?')
+    .bind(wallet, role).first<AgentRow>()
+  if (!agent) return error(request, env, 'AGENT_NOT_FOUND', '이 지갑과 역할로 등록된 에이전트를 찾을 수 없습니다.', 404)
+
+  const challengeId = crypto.randomUUID()
+  const createdAt = new Date().toISOString()
+  const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString()
+  const message = buildLoginChallengeMessage({ id: challengeId, agentId: agent.id, wallet, role, expiresAt })
+  await env.DB.prepare('INSERT INTO login_challenges (id, agent_id, wallet, role, message, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .bind(challengeId, agent.id, wallet, role, message, expiresAt, createdAt).run()
+  return json(request, env, { challengeId, message, expiresAt, agentId: agent.id, name: agent.name, role: agent.role, wallet: agent.wallet }, 201)
+}
+
+async function loginAgent(request: Request, env: Env) {
+  const body = await readBody(request)
+  const challengeId = typeof body?.challengeId === 'string' ? body.challengeId : ''
+  const signature = typeof body?.signature === 'string' ? body.signature.trim() : ''
+  if (!challengeId || !signature) return error(request, env, 'INVALID_LOGIN', '로그인 정보가 올바르지 않습니다.', 400)
+
+  const challenge = await env.DB.prepare(`SELECT c.id, c.agent_id, c.wallet, c.role, c.message, c.expires_at, c.used_at, a.name, a.created_at
+    FROM login_challenges c JOIN agents a ON a.id = c.agent_id WHERE c.id = ?`)
+    .bind(challengeId).first<{ id: string; agent_id: string; wallet: string; role: 'brand' | 'creator'; message: string; expires_at: string; used_at: string | null; name: string; created_at: string }>()
+  if (!challenge || challenge.used_at || challenge.expires_at <= new Date().toISOString()) return error(request, env, 'CHALLENGE_EXPIRED', '로그인 서명 문구가 만료됐거나 이미 사용됐습니다.', 409)
+  if (!verifyWalletSignature({ message: challenge.message, signature, wallet: challenge.wallet })) return error(request, env, 'INVALID_SIGNATURE', '지갑 서명을 확인할 수 없습니다.', 401)
+
+  const loggedInAt = new Date().toISOString()
+  const sessionToken = `${crypto.randomUUID()}${crypto.randomUUID()}`.replaceAll('-', '')
+  const sessionExpiresAt = new Date(Date.now() + 24 * 60 * 60_000).toISOString()
+  try {
+    await env.DB.batch([
+      env.DB.prepare('INSERT INTO agent_sessions (id, agent_id, challenge_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+        .bind(crypto.randomUUID(), challenge.agent_id, challenge.id, await sha256(sessionToken), sessionExpiresAt, loggedInAt),
+      env.DB.prepare('UPDATE login_challenges SET used_at = ? WHERE id = ? AND used_at IS NULL').bind(loggedInAt, challenge.id),
+      env.DB.prepare('UPDATE agents SET session_token_hash = ?, session_expires_at = ? WHERE id = ?')
+        .bind(await sha256(sessionToken), sessionExpiresAt, challenge.agent_id),
+      audit(env, { agentId: challenge.agent_id, eventType: 'agent.logged_in', payload: { role: challenge.role, wallet: challenge.wallet }, createdAt: loggedInAt }),
+    ])
+  } catch (cause) {
+    if (cause instanceof Error && cause.message.includes('UNIQUE constraint failed')) return error(request, env, 'CHALLENGE_USED', '이미 사용된 로그인 서명 문구입니다.', 409)
+    throw cause
+  }
+  return json(request, env, { agentId: challenge.agent_id, name: challenge.name, role: challenge.role, wallet: challenge.wallet, sessionToken, sessionExpiresAt, createdAt: challenge.created_at })
 }
 
 async function createCampaign(request: Request, env: Env) {
@@ -252,7 +302,9 @@ export default {
     const url = new URL(request.url)
     if (request.method === 'GET' && url.pathname === '/api/health') return json(request, env, { ok: true, service: 'creatorflow-api' })
     if (request.method === 'POST' && url.pathname === '/api/auth/challenge') return createChallenge(request, env)
+    if (request.method === 'POST' && url.pathname === '/api/auth/login-challenge') return createLoginChallenge(request, env)
     if (request.method === 'POST' && url.pathname === '/api/agents/register') return registerAgent(request, env)
+    if (request.method === 'POST' && url.pathname === '/api/agents/login') return loginAgent(request, env)
     if (request.method === 'GET' && url.pathname === '/api/agents') return listAgents(request, env)
     if (request.method === 'GET' && url.pathname === '/api/audit') return listAuditEvents(request, env)
     if (request.method === 'GET' && url.pathname === '/api/campaigns') return listCampaigns(request, env)

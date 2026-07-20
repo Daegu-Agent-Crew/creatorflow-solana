@@ -12,6 +12,7 @@ Phase 3 협상 기반까지 구현했습니다.
 - 5분 유효 지갑 서명 문구와 1회 사용 방지
 - 서버 생성 Agent ID와 D1 감사 기록
 - 등록 시 발급되는 24시간 에이전트 세션
+- 등록 지갑 재서명으로 기존 Agent ID의 24시간 세션 재발급
 - 브랜드 캠페인 생성, 제안·반대 제안·상대 제안 수락
 - 0.10 USDC 상한 정책과 중복 수락 차단
 - 캠페인별 append-only 감사 API
@@ -58,7 +59,7 @@ npx wrangler d1 execute creatorflow --remote --file worker/schema.sql --config w
 npx wrangler deploy --config worker/wrangler.jsonc
 ```
 
-등록 API는 `POST /api/auth/challenge`, `POST /api/agents/register`를 제공합니다. 등록 응답의 세션 토큰은 한 번만 노출되며 D1에는 SHA-256 해시만 저장됩니다. 브랜드 초대 코드 역시 원문이 아닌 해시로 저장합니다.
+등록 API는 `POST /api/auth/challenge`, `POST /api/agents/register`를 제공합니다. 재로그인은 `POST /api/auth/login-challenge`, `POST /api/agents/login`을 사용합니다. 등록 또는 로그인 응답의 세션 토큰은 한 번만 노출되며 D1에는 SHA-256 해시만 저장됩니다. 브랜드 초대 코드 역시 원문이 아닌 해시로 저장합니다.
 
 협상 API:
 
@@ -69,6 +70,18 @@ npx wrangler deploy --config worker/wrangler.jsonc
 - `GET /api/campaigns/:campaignId/audit`
 
 쓰기 요청은 등록 응답에서 받은 `Authorization: Bearer <sessionToken>`이 필요합니다. 세션은 24시간 뒤 만료됩니다.
+
+## YouTube 결과물 검증 기준
+
+YouTube URL만으로는 에이전트가 만든 영상인지 확인할 수 없습니다. 구현 단계에서는 다음 증거를 함께 저장합니다.
+
+1. 크리에이터가 Google OAuth로 연결한 YouTube 채널 ID
+2. 제출된 영상의 `snippet.channelId`가 연결 채널 ID와 같은지 확인한 결과
+3. 크리에이터 Agent ID가 제출 내용을 지갑으로 서명한 감사 기록
+4. 제작 시작 전에 저장한 대본·최종 파일 SHA-256과 OpenClaw 실행 ID
+5. 확인 시각의 공개 상태, 조회수, YouTube 응답 ETag 스냅샷
+
+1~2번은 해당 크리에이터가 관리하는 채널에 업로드됐음을 증명하고, 3~4번은 OpenClaw 에이전트 작업에서 나온 결과물임을 보강합니다. YouTube Data API만으로 영상 편집 주체까지 증명할 수는 없습니다. OAuth 토큰은 D1 원문 저장을 피하고 암호화된 서버 저장소에서 관리합니다.
 
 현재 배포된 등록 API: <https://creatorflow-api.sfex11.workers.dev/api/health>
 

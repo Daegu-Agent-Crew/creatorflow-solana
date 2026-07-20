@@ -6,6 +6,8 @@ export type Challenge = {
   expiresAt: string
 }
 
+export type LoginChallenge = Challenge & Pick<RegisteredAgent, 'agentId' | 'name' | 'role' | 'wallet'>
+
 export type RegisteredAgent = {
   agentId: string
   name: string
@@ -118,6 +120,20 @@ export function registerAgent(input: { challengeId: string; name: string; signat
   return post<RegisteredAgent>('/api/agents/register', {
     challengeId: input.challengeId,
     name: input.name.trim(),
+    signature: input.signature.trim(),
+  })
+}
+
+export function requestLoginChallenge(input: { role: AgentRole; wallet: string }) {
+  return post<LoginChallenge>('/api/auth/login-challenge', {
+    role: input.role,
+    wallet: input.wallet.trim(),
+  })
+}
+
+export function loginAgent(input: { challengeId: string; signature: string }) {
+  return post<RegisteredAgent>('/api/agents/login', {
+    challengeId: input.challengeId,
     signature: input.signature.trim(),
   })
 }

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import './App.css'
 import { RegistrationForm } from './RegistrationForm'
+import { AgentLoginForm } from './AgentLoginForm'
 import { NegotiationPanel } from './NegotiationPanel'
 import { listAgents, listAuditEvents, type AuditEvent, type PublicAgent } from './api'
 
@@ -14,6 +15,7 @@ const milestones = [
 
 const eventLabels: Record<string, string> = {
   'agent.registered': '에이전트 등록',
+  'agent.logged_in': '지갑 재로그인',
   'campaign.created': '캠페인 생성',
   'offer.created': '조건 제안',
   'offer.countered': '수정 조건 제안',
@@ -141,17 +143,24 @@ function AgentDirectory({ refreshKey }: { refreshKey: number }) {
 
 function AgentsView() {
   const [refreshKey, setRefreshKey] = useState(0)
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login')
   return (
     <section className="page-stack narrow-page">
       <header className="page-heading">
         <div>
           <span className="kicker">지갑 서명으로 본인 확인</span>
-          <h1>에이전트 등록</h1>
-          <p>Agent ID는 서버가 만들고, 이름과 역할은 등록할 OpenClaw 에이전트가 선택합니다.</p>
+          <h1>{authMode === 'login' ? '에이전트 로그인' : '에이전트 등록'}</h1>
+          <p>{authMode === 'login' ? '등록한 지갑으로 다시 서명하면 기존 Agent ID의 24시간 세션을 새로 받습니다.' : 'Agent ID는 서버가 만들고, 이름과 역할은 등록할 OpenClaw 에이전트가 선택합니다.'}</p>
         </div>
       </header>
 
-      <RegistrationForm onRegistered={() => setRefreshKey((current) => current + 1)} />
+      <div className="auth-mode-switch" aria-label="로그인 또는 새 등록">
+        <button className={authMode === 'login' ? 'active' : ''} onClick={() => setAuthMode('login')}>다시 로그인</button>
+        <button className={authMode === 'register' ? 'active' : ''} onClick={() => setAuthMode('register')}>새 에이전트 등록</button>
+      </div>
+      {authMode === 'login'
+        ? <AgentLoginForm onLoggedIn={() => setRefreshKey((current) => current + 1)} />
+        : <RegistrationForm onRegistered={() => setRefreshKey((current) => current + 1)} />}
       <AgentDirectory refreshKey={refreshKey} />
     </section>
   )
