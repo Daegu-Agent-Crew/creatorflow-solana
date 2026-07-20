@@ -75,11 +75,18 @@ async function registerAgent(request: Request, env: Env) {
   const createdAt = new Date().toISOString()
   const statements = [
     env.DB.prepare('UPDATE auth_challenges SET used_at = ? WHERE id = ? AND used_at IS NULL').bind(createdAt, challenge.id),
-    env.DB.prepare('INSERT INTO agents (id, name, role, wallet, challenge_id, created_at) VALUES (?, ?, ?, ?, ?, ?)').bind(agentId, name, challenge.role, challenge.wallet, challenge.id, createdAt),
+    env.DB.prepare('INSERT INTO agents (id, name, role, wallet, challenge_id, invite_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(agentId, name, challenge.role, challenge.wallet, challenge.id, challenge.invite_id, createdAt),
     env.DB.prepare('INSERT INTO audit_events (id, agent_id, event_type, payload, created_at) VALUES (?, ?, ?, ?, ?)').bind(crypto.randomUUID(), agentId, 'agent.registered', JSON.stringify({ role: challenge.role, wallet: challenge.wallet }), createdAt),
   ]
   if (challenge.invite_id) statements.push(env.DB.prepare('UPDATE brand_invites SET used_at = ?, used_by_agent_id = ? WHERE id = ? AND used_at IS NULL').bind(createdAt, agentId, challenge.invite_id))
-  await env.DB.batch(statements)
+  try {
+    await env.DB.batch(statements)
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('UNIQUE constraint failed')) {
+      return json(request, env, { error: '이미 등록된 지갑이거나 사용된 브랜드 초대 코드입니다.' }, 409)
+    }
+    throw error
+  }
   return json(request, env, { agentId, name, role: challenge.role, wallet: challenge.wallet, createdAt }, 201)
 }
 

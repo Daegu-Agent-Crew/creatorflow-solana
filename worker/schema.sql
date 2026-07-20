@@ -25,9 +25,11 @@ CREATE TABLE IF NOT EXISTS agents (
   role TEXT NOT NULL CHECK (role IN ('brand', 'creator')),
   wallet TEXT NOT NULL,
   challenge_id TEXT NOT NULL UNIQUE,
+  invite_id TEXT UNIQUE,
   created_at TEXT NOT NULL,
   UNIQUE (wallet, role),
-  FOREIGN KEY (challenge_id) REFERENCES auth_challenges(id)
+  FOREIGN KEY (challenge_id) REFERENCES auth_challenges(id),
+  FOREIGN KEY (invite_id) REFERENCES brand_invites(id)
 );
 
 CREATE TABLE IF NOT EXISTS audit_events (
