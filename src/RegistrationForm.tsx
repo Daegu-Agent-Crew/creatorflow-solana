@@ -17,7 +17,7 @@ function getPhantomProvider(): PhantomProvider | null {
   return provider?.isPhantom ? provider : null
 }
 
-export function RegistrationForm() {
+export function RegistrationForm({ onRegistered }: { onRegistered?: (agent: RegisteredAgent) => void }) {
   const [role, setRole] = useState<AgentRole>('creator')
   const [name, setName] = useState('')
   const [wallet, setWallet] = useState('')
@@ -46,6 +46,7 @@ export function RegistrationForm() {
     saveAgentSession(registered)
     setAgent(registered)
     setMessage(`등록 완료: ${registered.agentId}`)
+    onRegistered?.(registered)
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {

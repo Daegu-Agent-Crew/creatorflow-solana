@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import './App.css'
 import { RegistrationForm } from './RegistrationForm'
 import { NegotiationPanel } from './NegotiationPanel'
+import { listAgents, listAuditEvents, type AuditEvent, type PublicAgent } from './api'
 
 type View = 'campaign' | 'agents' | 'activity'
 
@@ -11,12 +12,25 @@ const milestones = [
   { label: '성과 확인', detail: '공개 조회수 100회 달성 시 지급합니다.', amount: '0.01 USDC', state: '잠김' },
 ]
 
-const events = [
-  { time: '14:32', actor: '브랜드 에이전트', action: '캠페인 조건 생성', proof: 'Gemini 실행 CF-201' },
-  { time: '14:33', actor: '크리에이터 에이전트', action: '수정 제안 제출', proof: '지갑 확인 완료' },
-  { time: '14:34', actor: '브랜드 에이전트', action: '제안 승인', proof: '정책 검사 통과' },
-  { time: '14:34', actor: 'Solana Devnet', action: '0.02 USDC 지급 준비', proof: '서명 대기' },
-]
+const eventLabels: Record<string, string> = {
+  'agent.registered': '에이전트 등록',
+  'campaign.created': '캠페인 생성',
+  'offer.created': '조건 제안',
+  'offer.countered': '수정 조건 제안',
+  'offer.rejected': '제안 거절',
+  'deal.accepted': '계약 수락',
+}
+
+function shortWallet(wallet: string) {
+  return `${wallet.slice(0, 6)}…${wallet.slice(-4)}`
+}
+
+function eventProof(event: AuditEvent) {
+  if (event.campaignTitle) return event.campaignTitle
+  if (event.agentRole === 'brand') return '브랜드'
+  if (event.agentRole === 'creator') return '크리에이터'
+  return '감사 기록'
+}
 
 function WalletStatus() {
   return (
@@ -98,7 +112,35 @@ function CampaignView({ onRegister }: { onRegister: () => void }) {
   )
 }
 
+function AgentDirectory({ refreshKey }: { refreshKey: number }) {
+  const [agents, setAgents] = useState<PublicAgent[]>([])
+  const [message, setMessage] = useState('')
+
+  useEffect(() => {
+    listAgents()
+      .then((result) => setAgents(result.agents))
+      .catch((error) => setMessage(error instanceof Error ? error.message : '에이전트 목록을 불러오지 못했습니다.'))
+  }, [refreshKey])
+
+  return (
+    <article className="agent-directory">
+      <div className="section-heading"><div><span className="kicker">D1 등록 현황</span><h2>등록된 에이전트</h2></div><span className="state-badge muted-badge">{agents.length}명</span></div>
+      {agents.length ? <div className="agent-cards">{agents.map((agent) => (
+        <div className="agent-card" key={agent.agentId}>
+          <span className={`agent-role ${agent.role}`}>{agent.role === 'brand' ? '브랜드' : '크리에이터'}</span>
+          <strong>{agent.name}</strong>
+          <code>{agent.agentId}</code>
+          <span>{shortWallet(agent.wallet)}</span>
+          <time>{new Date(agent.createdAt).toLocaleString('ko-KR')}</time>
+        </div>
+      ))}</div> : <p className="empty-note">아직 등록된 에이전트가 없습니다.</p>}
+      {message ? <p className="api-message" role="status">{message}</p> : null}
+    </article>
+  )
+}
+
 function AgentsView() {
+  const [refreshKey, setRefreshKey] = useState(0)
   return (
     <section className="page-stack narrow-page">
       <header className="page-heading">
@@ -109,12 +151,22 @@ function AgentsView() {
         </div>
       </header>
 
-      <RegistrationForm />
+      <RegistrationForm onRegistered={() => setRefreshKey((current) => current + 1)} />
+      <AgentDirectory refreshKey={refreshKey} />
     </section>
   )
 }
 
 function ActivityView() {
+  const [events, setEvents] = useState<AuditEvent[]>([])
+  const [message, setMessage] = useState('')
+
+  useEffect(() => {
+    listAuditEvents()
+      .then((result) => setEvents(result.events))
+      .catch((error) => setMessage(error instanceof Error ? error.message : '활동 기록을 불러오지 못했습니다.'))
+  }, [])
+
   return (
     <section className="page-stack">
       <header className="page-heading">
@@ -124,11 +176,16 @@ function ActivityView() {
       <article className="activity-list">
         <div className="activity-row activity-head"><span>시각</span><span>실행 주체</span><span>활동</span><span>증거</span></div>
         {events.map((event) => (
-          <div className="activity-row" key={`${event.time}-${event.action}`}>
-            <time>{event.time}</time><strong>{event.actor}</strong><span>{event.action}</span><span className="proof">{event.proof}</span>
+          <div className="activity-row" key={event.eventId}>
+            <time>{new Date(event.createdAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}</time>
+            <strong>{event.agentName ?? '시스템'}</strong>
+            <span>{eventLabels[event.eventType] ?? event.eventType}</span>
+            <span className="proof">{eventProof(event)}</span>
           </div>
         ))}
       </article>
+      {!events.length && !message ? <p className="empty-note">아직 활동 기록이 없습니다.</p> : null}
+      {message ? <p className="api-message" role="status">{message}</p> : null}
     </section>
   )
 }

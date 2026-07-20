@@ -44,6 +44,20 @@ export type Offer = {
 
 export type AgentSession = Pick<RegisteredAgent, 'agentId' | 'name' | 'role' | 'wallet' | 'sessionToken' | 'sessionExpiresAt'>
 
+export type PublicAgent = Pick<RegisteredAgent, 'agentId' | 'name' | 'role' | 'wallet' | 'createdAt'>
+
+export type AuditEvent = {
+  eventId: string
+  agentId: string | null
+  agentName: string | null
+  agentRole: AgentRole | null
+  campaignId: string | null
+  campaignTitle: string | null
+  eventType: string
+  payload: Record<string, unknown>
+  createdAt: string
+}
+
 const sessionKey = 'creatorflow.agent-session'
 
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '')
@@ -110,6 +124,14 @@ export function registerAgent(input: { challengeId: string; name: string; signat
 
 export function listCampaigns() {
   return request<{ campaigns: Campaign[] }>('/api/campaigns')
+}
+
+export function listAgents() {
+  return request<{ agents: PublicAgent[] }>('/api/agents')
+}
+
+export function listAuditEvents() {
+  return request<{ events: AuditEvent[] }>('/api/audit')
 }
 
 export function getCampaign(campaignId: string) {
