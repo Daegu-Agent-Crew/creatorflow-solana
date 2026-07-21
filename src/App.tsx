@@ -6,6 +6,8 @@ import { NegotiationPanel } from './NegotiationPanel'
 import { getAgentSession, listAgents, listAuditEvents, listVideoSubmissions, requestVideoAttestationChallenge, requestVideoSubmissionChallenge, submitSignedVideo, type AuditEvent, type PublicAgent, type VideoSubmission, type VideoSubmissionChallenge } from './api'
 import { connectPhantom, signPhantomMessage } from './phantom'
 import { PaymentPanel } from './PaymentPanel'
+import { CreatorPipeline } from './CreatorPipeline'
+import { WalletDelegationPanel } from './WalletDelegationPanel'
 
 type View = 'campaign' | 'agents' | 'activity'
 
@@ -50,7 +52,8 @@ function WalletStatus() {
   )
 }
 
-function CampaignView({ onRegister }: { onRegister: () => void }) {
+// Legacy single-creator screen kept temporarily for backward-compatible deep links.
+export function CampaignView({ onRegister }: { onRegister: () => void }) {
   const [youtubeUrl, setYoutubeUrl] = useState('https://youtu.be/I96Mwbm7Tp0')
   const [videos, setVideos] = useState<VideoSubmission[]>([])
   const [videoMessage, setVideoMessage] = useState('')
@@ -250,6 +253,7 @@ function AgentsView() {
       {authMode === 'login'
         ? <AgentLoginForm onLoggedIn={() => setRefreshKey((current) => current + 1)} />
         : <RegistrationForm onRegistered={() => setRefreshKey((current) => current + 1)} />}
+      <WalletDelegationPanel refreshKey={refreshKey} />
       <AgentDirectory refreshKey={refreshKey} />
     </section>
   )
@@ -308,7 +312,7 @@ function App() {
         <WalletStatus />
       </header>
       <main>
-        {view === 'campaign' ? <CampaignView onRegister={() => setView('agents')} /> : null}
+        {view === 'campaign' ? <CreatorPipeline onManage={() => setView('agents')} /> : null}
         {view === 'agents' ? <AgentsView /> : null}
         {view === 'activity' ? <ActivityView /> : null}
       </main>
