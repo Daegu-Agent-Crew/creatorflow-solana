@@ -72,8 +72,26 @@ export type VideoSubmission = {
   channelTitle: string
   thumbnailUrl: string | null
   verificationStatus: 'public_verified' | 'channel_verified'
+  creatorSigned: boolean
   createdAt: string
   verifiedAt: string
+}
+
+export type PaymentRequest = {
+  paymentId: string
+  campaignId: string
+  campaignTitle: string
+  milestone: 'video_publication'
+  senderWallet: string
+  recipientWallet: string
+  mint: string
+  amountBaseUnits: string
+  amountUsdc: string
+  memo: string
+  status: 'requested' | 'confirmed'
+  transactionSignature: string | null
+  createdAt: string
+  confirmedAt: string | null
 }
 
 export type VideoSubmissionChallenge = {
@@ -186,9 +204,31 @@ export function requestVideoSubmissionChallenge(session: AgentSession, youtubeUr
   })
 }
 
+export function requestVideoAttestationChallenge(session: AgentSession, submissionId: string) {
+  return request<VideoSubmissionChallenge>(`/api/videos/${submissionId}/attestation-challenge`, {
+    method: 'POST', headers: authenticatedHeaders(session), body: '{}',
+  })
+}
+
 export function submitSignedVideo(session: AgentSession, challengeId: string, signature: string) {
   return request<VideoSubmission>('/api/videos/submit', {
     method: 'POST', headers: authenticatedHeaders(session), body: JSON.stringify({ challengeId, signature: signature.trim() }),
+  })
+}
+
+export function listPayments() {
+  return request<{ payments: PaymentRequest[] }>('/api/payments')
+}
+
+export function createPaymentRequest(session: AgentSession, campaignId: string) {
+  return request<PaymentRequest>('/api/payments/request', {
+    method: 'POST', headers: authenticatedHeaders(session), body: JSON.stringify({ campaignId }),
+  })
+}
+
+export function confirmPayment(session: AgentSession, paymentId: string, transactionSignature: string) {
+  return request<PaymentRequest>(`/api/payments/${paymentId}/confirm`, {
+    method: 'POST', headers: authenticatedHeaders(session), body: JSON.stringify({ transactionSignature }),
   })
 }
 

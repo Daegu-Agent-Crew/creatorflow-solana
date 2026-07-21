@@ -3,8 +3,9 @@ import './App.css'
 import { RegistrationForm } from './RegistrationForm'
 import { AgentLoginForm } from './AgentLoginForm'
 import { NegotiationPanel } from './NegotiationPanel'
-import { getAgentSession, listAgents, listAuditEvents, listVideoSubmissions, requestVideoSubmissionChallenge, submitSignedVideo, type AuditEvent, type PublicAgent, type VideoSubmission, type VideoSubmissionChallenge } from './api'
+import { getAgentSession, listAgents, listAuditEvents, listVideoSubmissions, requestVideoAttestationChallenge, requestVideoSubmissionChallenge, submitSignedVideo, type AuditEvent, type PublicAgent, type VideoSubmission, type VideoSubmissionChallenge } from './api'
 import { connectPhantom, signPhantomMessage } from './phantom'
+import { PaymentPanel } from './PaymentPanel'
 
 type View = 'campaign' | 'agents' | 'activity'
 
@@ -23,6 +24,9 @@ const eventLabels: Record<string, string> = {
   'offer.rejected': '제안 거절',
   'deal.accepted': '계약 수락',
   'youtube.video_registered': 'YouTube 영상 등록',
+  'youtube.video_attested': '영상 제출 서명',
+  'payment.requested': 'USDC 지급 요청',
+  'payment.confirmed': 'USDC 지급 완료',
 }
 
 function shortWallet(wallet: string) {
@@ -88,7 +92,9 @@ function CampaignView({ onRegister }: { onRegister: () => void }) {
         return
       }
 
-      const challenge = await requestVideoSubmissionChallenge(session, youtubeUrl)
+      const challenge = latestVideo && !latestVideo.creatorSigned
+        ? await requestVideoAttestationChallenge(session, latestVideo.submissionId)
+        : await requestVideoSubmissionChallenge(session, youtubeUrl)
       setSubmissionChallenge(challenge)
       try {
         const { provider, wallet } = await connectPhantom()
@@ -169,19 +175,19 @@ function CampaignView({ onRegister }: { onRegister: () => void }) {
               <small>공개 영상 확인 완료 · 채널 OAuth 확인 전</small>
             </div>
           ) : <p>공개된 YouTube 영상을 확인한 뒤 캠페인과 크리에이터 Agent ID에 연결합니다.</p>}
-          <form onSubmit={submitVideo}>
-            <label className="field">
+          {!latestVideo || !latestVideo.creatorSigned ? <form onSubmit={submitVideo}>
+            {!latestVideo ? <label className="field">
               <span>YouTube 영상 주소</span>
               <input type="url" value={youtubeUrl} onChange={(event) => { setYoutubeUrl(event.target.value); setSubmissionChallenge(null); setSubmissionSignature('') }} disabled={Boolean(submissionChallenge)} placeholder="https://youtube.com/watch?v=…" required />
-            </label>
+            </label> : null}
             {submissionChallenge ? (
               <>
                 <div className="challenge-box simple-signature"><div><strong>대구루가 확인할 내용</strong><button className="copy-button" type="button" onClick={() => navigator.clipboard.writeText(submissionChallenge.message)}>복사</button></div><pre>{submissionChallenge.message}</pre></div>
                 <label className="field"><span>OpenClaw 서명 결과</span><input value={submissionSignature} onChange={(event) => setSubmissionSignature(event.target.value)} placeholder="Base58 서명" /></label>
               </>
             ) : null}
-            <button className="primary-button full-button" disabled={videoPending}>{videoPending ? '처리 중…' : submissionChallenge ? '서명 확인 및 제출' : '지갑으로 서명하고 제출'}</button>
-          </form>
+            <button className="primary-button full-button" disabled={videoPending}>{videoPending ? '처리 중…' : submissionChallenge ? '서명 확인 및 제출' : latestVideo ? '대구루 지갑으로 제출 확인' : '지갑으로 서명하고 제출'}</button>
+          </form> : <p className="signed-note">✓ 대구루 지갑 제출 서명 완료</p>}
           {videoMessage ? <p className="api-message" role="status">{videoMessage}</p> : null}
           {!getAgentSession() ? <button className="secondary-button full-button login-helper" onClick={onRegister}>크리에이터 로그인</button> : null}
           <p className="helper-text">영상 제출만 승인합니다. 결제 권한은 없으며 지갑 개인키는 전송하지 않습니다.</p>
@@ -191,6 +197,7 @@ function CampaignView({ onRegister }: { onRegister: () => void }) {
           </div>
         </aside>
       </div>
+      <PaymentPanel video={latestVideo} onLogin={onRegister} />
       <NegotiationPanel />
     </section>
   )

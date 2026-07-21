@@ -1,9 +1,10 @@
 import bs58 from 'bs58'
 
-type PhantomProvider = {
+export type PhantomProvider = {
   isPhantom?: boolean
   connect: () => Promise<{ publicKey: { toString: () => string } }>
   signMessage?: (message: Uint8Array, display?: string) => Promise<{ signature: Uint8Array } | Uint8Array>
+  signAndSendTransaction?: (transaction: unknown) => Promise<{ signature: string } | string>
 }
 
 function getPhantomProvider(): PhantomProvider | null {

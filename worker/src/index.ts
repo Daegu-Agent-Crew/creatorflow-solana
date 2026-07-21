@@ -1,16 +1,19 @@
 import { buildChallengeMessage, buildLoginChallengeMessage, decodePublicKey, isValidAgentName, parseRole, sha256, verifyWalletSignature } from './security'
 import { parseOfferKind, validateOfferTerms } from './negotiation'
 import { buildVideoSubmissionMessage, canonicalYoutubeUrl, getYoutubeVideoId } from './youtube'
+import { fetchDevnetTransaction, SOLANA_DEVNET_USDC_MINT, verifyDevnetUsdcPayment, VIDEO_PAYMENT_AMOUNT_BASE_UNITS, VIDEO_PAYMENT_AMOUNT_USDC } from './solana'
 
 interface Env {
   DB: D1Database
   ALLOWED_ORIGIN?: string
+  SOLANA_RPC_URL?: string
 }
 
 type JsonRecord = Record<string, unknown>
 type AgentRow = { id: string; name: string; role: 'brand' | 'creator'; wallet: string }
 type CampaignRow = { id: string; title: string; brand_agent_id: string; creator_agent_id: string | null; status: 'negotiating' | 'accepted' | 'cancelled'; accepted_offer_id: string | null; created_at: string; updated_at: string }
-type VideoSubmissionRow = { id: string; campaign_id: string; campaign_title: string; creator_agent_id: string; creator_name: string; video_id: string; youtube_url: string; title: string; channel_title: string; thumbnail_url: string | null; verification_status: 'public_verified' | 'channel_verified'; created_at: string; verified_at: string }
+type VideoSubmissionRow = { id: string; campaign_id: string; campaign_title: string; creator_agent_id: string; creator_name: string; video_id: string; youtube_url: string; title: string; channel_title: string; thumbnail_url: string | null; verification_status: 'public_verified' | 'channel_verified'; creator_signed: number; created_at: string; verified_at: string }
+type PaymentRow = { id: string; campaign_id: string; campaign_title: string; milestone: 'video_publication'; sender_wallet: string; recipient_wallet: string; mint: string; amount_base_units: string; amount_usdc: string; memo: string; status: 'requested' | 'confirmed'; transaction_signature: string | null; created_at: string; confirmed_at: string | null }
 
 function corsHeaders(request: Request, env: Env) {
   const origin = request.headers.get('origin') ?? ''
@@ -318,7 +321,7 @@ async function verifyPublicYoutubeVideo(videoId: string) {
 
 async function listVideoSubmissions(request: Request, env: Env) {
   const rows = await env.DB.prepare(`SELECT v.id, v.campaign_id, c.title AS campaign_title, v.creator_agent_id, a.name AS creator_name,
-    v.video_id, v.youtube_url, v.title, v.channel_title, v.thumbnail_url, v.verification_status, v.created_at, v.verified_at
+    v.video_id, v.youtube_url, v.title, v.channel_title, v.thumbnail_url, v.verification_status, v.creator_signature IS NOT NULL AS creator_signed, v.created_at, v.verified_at
     FROM video_submissions v JOIN campaigns c ON c.id = v.campaign_id JOIN agents a ON a.id = v.creator_agent_id
     ORDER BY v.created_at DESC LIMIT 20`).all<VideoSubmissionRow>()
   return json(request, env, { videos: rows.results.map((video) => ({
@@ -333,6 +336,7 @@ async function listVideoSubmissions(request: Request, env: Env) {
     channelTitle: video.channel_title,
     thumbnailUrl: video.thumbnail_url,
     verificationStatus: video.verification_status,
+    creatorSigned: Boolean(video.creator_signed),
     createdAt: video.created_at,
     verifiedAt: video.verified_at,
   })) })
@@ -363,6 +367,28 @@ async function createVideoSubmissionChallenge(request: Request, env: Env) {
   return json(request, env, { challengeId, message, expiresAt, videoId, title: verified.title, channelTitle: verified.channelTitle, thumbnailUrl: verified.thumbnailUrl }, 201)
 }
 
+async function createVideoAttestationChallenge(request: Request, env: Env, submissionId: string) {
+  const agent = await authenticateAgent(request, env)
+  if (agent instanceof Response) return agent
+  if (agent.role !== 'creator') return error(request, env, 'ROLE_FORBIDDEN', '크리에이터 에이전트로 로그인해야 영상을 확인 서명할 수 있습니다.', 403)
+  const submission = await env.DB.prepare(`SELECT v.id, v.campaign_id, v.video_id, v.youtube_url, v.title, v.channel_title, v.thumbnail_url, v.creator_signature
+    FROM video_submissions v WHERE v.id = ? AND v.creator_agent_id = ?`).bind(submissionId, agent.id).first<{
+      id: string; campaign_id: string; video_id: string; youtube_url: string; title: string; channel_title: string; thumbnail_url: string | null; creator_signature: string | null
+    }>()
+  if (!submission) return error(request, env, 'VIDEO_NOT_FOUND', '이 크리에이터의 등록 영상을 찾을 수 없습니다.', 404)
+  if (submission.creator_signature) return error(request, env, 'ALREADY_SIGNED', '이미 대구루 지갑으로 제출 확인된 영상입니다.', 409)
+
+  const challengeId = crypto.randomUUID()
+  const confirmationCode = challengeId.replaceAll('-', '').slice(0, 8).toUpperCase()
+  const createdAt = new Date().toISOString()
+  const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString()
+  const message = buildVideoSubmissionMessage({ videoId: submission.video_id, confirmationCode })
+  await env.DB.prepare(`INSERT INTO video_submission_challenges (id, agent_id, campaign_id, video_id, message, youtube_url, title, channel_title, thumbnail_url, submission_id, expires_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(challengeId, agent.id, submission.campaign_id, submission.video_id, message, submission.youtube_url, submission.title, submission.channel_title, submission.thumbnail_url, submission.id, expiresAt, createdAt).run()
+  return json(request, env, { challengeId, message, expiresAt, videoId: submission.video_id, title: submission.title, channelTitle: submission.channel_title, thumbnailUrl: submission.thumbnail_url }, 201)
+}
+
 async function submitSignedVideo(request: Request, env: Env) {
   const agent = await authenticateAgent(request, env)
   if (agent instanceof Response) return agent
@@ -372,9 +398,9 @@ async function submitSignedVideo(request: Request, env: Env) {
   const signature = typeof body?.signature === 'string' ? body.signature.trim() : ''
   if (!challengeId || !signature) return error(request, env, 'INVALID_SUBMISSION', '영상 제출 서명 정보가 올바르지 않습니다.', 400)
 
-  const challenge = await env.DB.prepare(`SELECT v.id, v.agent_id, v.campaign_id, c.title AS campaign_title, v.video_id, v.message, v.youtube_url, v.title, v.channel_title, v.thumbnail_url, v.expires_at, v.used_at
+  const challenge = await env.DB.prepare(`SELECT v.id, v.agent_id, v.campaign_id, c.title AS campaign_title, v.video_id, v.message, v.youtube_url, v.title, v.channel_title, v.thumbnail_url, v.submission_id, v.expires_at, v.used_at
     FROM video_submission_challenges v JOIN campaigns c ON c.id = v.campaign_id WHERE v.id = ?`).bind(challengeId).first<{
-      id: string; agent_id: string; campaign_id: string; campaign_title: string; video_id: string; message: string; youtube_url: string; title: string; channel_title: string; thumbnail_url: string | null; expires_at: string; used_at: string | null
+      id: string; agent_id: string; campaign_id: string; campaign_title: string; video_id: string; message: string; youtube_url: string; title: string; channel_title: string; thumbnail_url: string | null; submission_id: string | null; expires_at: string; used_at: string | null
     }>()
   if (!challenge || challenge.agent_id !== agent.id) return error(request, env, 'CHALLENGE_NOT_FOUND', '영상 제출 서명 문구를 찾을 수 없습니다.', 404)
   if (challenge.used_at || challenge.expires_at <= new Date().toISOString()) return error(request, env, 'CHALLENGE_EXPIRED', '영상 제출 서명 문구가 만료됐거나 이미 사용됐습니다.', 409)
@@ -382,6 +408,27 @@ async function submitSignedVideo(request: Request, env: Env) {
 
   const submissionId = `vid_${crypto.randomUUID().replaceAll('-', '').slice(0, 20)}`
   const createdAt = new Date().toISOString()
+  if (challenge.submission_id) {
+    try {
+      await env.DB.batch([
+        env.DB.prepare('INSERT INTO video_attestations (submission_id, challenge_id, agent_id, signature, created_at) VALUES (?, ?, ?, ?, ?)')
+          .bind(challenge.submission_id, challenge.id, agent.id, signature, createdAt),
+        env.DB.prepare('UPDATE video_submissions SET submission_challenge_id = ?, creator_signature = ? WHERE id = ? AND creator_signature IS NULL')
+          .bind(challenge.id, signature, challenge.submission_id),
+        env.DB.prepare('UPDATE video_submission_challenges SET used_at = ? WHERE id = ? AND used_at IS NULL').bind(createdAt, challenge.id),
+        audit(env, { agentId: agent.id, campaignId: challenge.campaign_id, eventType: 'youtube.video_attested', payload: { submissionId: challenge.submission_id, videoId: challenge.video_id, creatorSigned: true }, createdAt }),
+      ])
+    } catch (cause) {
+      if (cause instanceof Error && cause.message.includes('UNIQUE constraint failed')) return error(request, env, 'ALREADY_SIGNED', '이미 대구루 지갑으로 제출 확인된 영상입니다.', 409)
+      throw cause
+    }
+    return json(request, env, {
+      submissionId: challenge.submission_id, campaignId: challenge.campaign_id, campaignTitle: challenge.campaign_title,
+      creatorAgentId: agent.id, creatorName: agent.name, videoId: challenge.video_id, youtubeUrl: challenge.youtube_url,
+      title: challenge.title, channelTitle: challenge.channel_title, thumbnailUrl: challenge.thumbnail_url,
+      verificationStatus: 'public_verified', creatorSigned: true, createdAt, verifiedAt: createdAt,
+    })
+  }
   try {
     await env.DB.batch([
       env.DB.prepare(`INSERT INTO video_submissions (id, campaign_id, creator_agent_id, video_id, youtube_url, title, channel_title, thumbnail_url, verification_status, created_at, verified_at, submission_challenge_id, creator_signature)
@@ -406,9 +453,116 @@ async function submitSignedVideo(request: Request, env: Env) {
     channelTitle: challenge.channel_title,
     thumbnailUrl: challenge.thumbnail_url,
     verificationStatus: 'public_verified',
+    creatorSigned: true,
     createdAt,
     verifiedAt: createdAt,
   }, 201)
+}
+
+function paymentJson(row: PaymentRow) {
+  return {
+    paymentId: row.id,
+    campaignId: row.campaign_id,
+    campaignTitle: row.campaign_title,
+    milestone: row.milestone,
+    senderWallet: row.sender_wallet,
+    recipientWallet: row.recipient_wallet,
+    mint: row.mint,
+    amountBaseUnits: row.amount_base_units,
+    amountUsdc: row.amount_usdc,
+    memo: row.memo,
+    status: row.status,
+    transactionSignature: row.transaction_signature,
+    createdAt: row.created_at,
+    confirmedAt: row.confirmed_at,
+  }
+}
+
+async function listPayments(request: Request, env: Env) {
+  const rows = await env.DB.prepare(`SELECT p.id, p.campaign_id, c.title AS campaign_title, p.milestone, p.sender_wallet, p.recipient_wallet,
+    p.mint, p.amount_base_units, p.amount_usdc, p.memo, p.status, p.transaction_signature, p.created_at, p.confirmed_at
+    FROM payment_requests p JOIN campaigns c ON c.id = p.campaign_id ORDER BY p.created_at DESC LIMIT 50`).all<PaymentRow>()
+  return json(request, env, { payments: rows.results.map(paymentJson) })
+}
+
+async function createPaymentRequest(request: Request, env: Env) {
+  const agent = await authenticateAgent(request, env)
+  if (agent instanceof Response) return agent
+  if (agent.role !== 'brand') return error(request, env, 'ROLE_FORBIDDEN', '브랜드 에이전트만 USDC 지급을 요청할 수 있습니다.', 403)
+  const body = await readBody(request)
+  const campaignId = typeof body?.campaignId === 'string' ? body.campaignId : ''
+  if (!campaignId) return error(request, env, 'INVALID_CAMPAIGN', '지급할 캠페인을 선택해 주세요.', 400)
+  const campaign = await env.DB.prepare(`SELECT c.id, c.title, c.brand_agent_id, c.creator_agent_id, c.accepted_offer_id,
+    brand.wallet AS sender_wallet, creator.wallet AS recipient_wallet, v.creator_signature
+    FROM campaigns c JOIN agents brand ON brand.id = c.brand_agent_id JOIN agents creator ON creator.id = c.creator_agent_id
+    JOIN video_submissions v ON v.campaign_id = c.id
+    WHERE c.id = ? AND c.status = 'accepted'`).bind(campaignId).first<{
+      id: string; title: string; brand_agent_id: string; creator_agent_id: string; accepted_offer_id: string; sender_wallet: string; recipient_wallet: string; creator_signature: string | null
+    }>()
+  if (!campaign) return error(request, env, 'PAYMENT_NOT_READY', '합의와 영상 등록이 완료된 캠페인을 찾을 수 없습니다.', 409)
+  if (campaign.brand_agent_id !== agent.id) return error(request, env, 'ROLE_FORBIDDEN', '이 캠페인의 브랜드 에이전트가 아닙니다.', 403)
+  if (!campaign.creator_signature) return error(request, env, 'CREATOR_SIGNATURE_REQUIRED', '대구루의 영상 제출 확인 서명이 먼저 필요합니다.', 409)
+
+  const existing = await env.DB.prepare(`SELECT p.id, p.campaign_id, c.title AS campaign_title, p.milestone, p.sender_wallet, p.recipient_wallet,
+    p.mint, p.amount_base_units, p.amount_usdc, p.memo, p.status, p.transaction_signature, p.created_at, p.confirmed_at
+    FROM payment_requests p JOIN campaigns c ON c.id = p.campaign_id WHERE p.campaign_id = ? AND p.milestone = 'video_publication'`)
+    .bind(campaign.id).first<PaymentRow>()
+  if (existing) return json(request, env, paymentJson(existing))
+
+  const paymentId = `pay_${crypto.randomUUID().replaceAll('-', '').slice(0, 20)}`
+  const memo = `CreatorFlow:${paymentId}`
+  const createdAt = new Date().toISOString()
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO payment_requests (id, campaign_id, offer_id, milestone, from_agent_id, to_agent_id, sender_wallet, recipient_wallet, mint, amount_base_units, amount_usdc, memo, status, created_at)
+      VALUES (?, ?, ?, 'video_publication', ?, ?, ?, ?, ?, ?, ?, ?, 'requested', ?)`)
+      .bind(paymentId, campaign.id, campaign.accepted_offer_id, agent.id, campaign.creator_agent_id, campaign.sender_wallet, campaign.recipient_wallet, SOLANA_DEVNET_USDC_MINT, VIDEO_PAYMENT_AMOUNT_BASE_UNITS, VIDEO_PAYMENT_AMOUNT_USDC, memo, createdAt),
+    audit(env, { agentId: agent.id, campaignId: campaign.id, eventType: 'payment.requested', payload: { paymentId, milestone: 'video_publication', amountUsdc: VIDEO_PAYMENT_AMOUNT_USDC, recipientWallet: campaign.recipient_wallet, mint: SOLANA_DEVNET_USDC_MINT }, createdAt }),
+  ])
+  return json(request, env, paymentJson({
+    id: paymentId, campaign_id: campaign.id, campaign_title: campaign.title, milestone: 'video_publication', sender_wallet: campaign.sender_wallet,
+    recipient_wallet: campaign.recipient_wallet, mint: SOLANA_DEVNET_USDC_MINT, amount_base_units: VIDEO_PAYMENT_AMOUNT_BASE_UNITS,
+    amount_usdc: VIDEO_PAYMENT_AMOUNT_USDC, memo, status: 'requested', transaction_signature: null, created_at: createdAt, confirmed_at: null,
+  }), 201)
+}
+
+async function confirmPayment(request: Request, env: Env, paymentId: string) {
+  const agent = await authenticateAgent(request, env)
+  if (agent instanceof Response) return agent
+  if (agent.role !== 'brand') return error(request, env, 'ROLE_FORBIDDEN', '브랜드 에이전트만 지급 거래를 확인할 수 있습니다.', 403)
+  const body = await readBody(request)
+  const transactionSignature = typeof body?.transactionSignature === 'string' ? body.transactionSignature.trim() : ''
+  if (!transactionSignature) return error(request, env, 'INVALID_TRANSACTION', 'Solana 거래 서명이 필요합니다.', 400)
+  const payment = await env.DB.prepare(`SELECT p.id, p.campaign_id, c.title AS campaign_title, p.milestone, p.from_agent_id, p.sender_wallet, p.recipient_wallet,
+    p.mint, p.amount_base_units, p.amount_usdc, p.memo, p.status, p.transaction_signature, p.created_at, p.confirmed_at
+    FROM payment_requests p JOIN campaigns c ON c.id = p.campaign_id WHERE p.id = ?`).bind(paymentId).first<PaymentRow & { from_agent_id: string }>()
+  if (!payment) return error(request, env, 'PAYMENT_NOT_FOUND', '지급 요청을 찾을 수 없습니다.', 404)
+  if (payment.from_agent_id !== agent.id) return error(request, env, 'ROLE_FORBIDDEN', '이 지급 요청의 브랜드 에이전트가 아닙니다.', 403)
+  if (payment.status === 'confirmed') {
+    if (payment.transaction_signature !== transactionSignature) return error(request, env, 'PAYMENT_ALREADY_CONFIRMED', '이미 다른 거래로 지급 확인됐습니다.', 409)
+    return json(request, env, paymentJson(payment))
+  }
+  const transaction = await fetchDevnetTransaction(transactionSignature, env.SOLANA_RPC_URL)
+  const valid = verifyDevnetUsdcPayment(transaction, {
+    senderWallet: payment.sender_wallet,
+    recipientWallet: payment.recipient_wallet,
+    mint: payment.mint,
+    amountBaseUnits: payment.amount_base_units,
+    memo: payment.memo,
+  })
+  if (!valid) return error(request, env, 'PAYMENT_VERIFICATION_FAILED', '0.03 Devnet USDC 지급 거래를 확인할 수 없습니다.', 422)
+
+  const confirmedAt = new Date().toISOString()
+  try {
+    await env.DB.batch([
+      env.DB.prepare("UPDATE payment_requests SET status = 'confirmed', transaction_signature = ?, confirmed_at = ? WHERE id = ? AND status = 'requested'")
+        .bind(transactionSignature, confirmedAt, payment.id),
+      audit(env, { agentId: agent.id, campaignId: payment.campaign_id, eventType: 'payment.confirmed', payload: { paymentId: payment.id, milestone: payment.milestone, amountUsdc: payment.amount_usdc, transactionSignature, mint: payment.mint }, createdAt: confirmedAt }),
+    ])
+  } catch (cause) {
+    if (cause instanceof Error && cause.message.includes('UNIQUE constraint failed')) return error(request, env, 'TRANSACTION_ALREADY_USED', '이미 다른 지급에 사용된 Solana 거래입니다.', 409)
+    throw cause
+  }
+  return json(request, env, paymentJson({ ...payment, status: 'confirmed', transaction_signature: transactionSignature, confirmed_at: confirmedAt }))
 }
 
 export default {
@@ -425,6 +579,12 @@ export default {
     if (request.method === 'GET' && url.pathname === '/api/videos') return listVideoSubmissions(request, env)
     if (request.method === 'POST' && url.pathname === '/api/videos/challenge') return createVideoSubmissionChallenge(request, env)
     if (request.method === 'POST' && url.pathname === '/api/videos/submit') return submitSignedVideo(request, env)
+    const videoAttestationMatch = url.pathname.match(/^\/api\/videos\/([^/]+)\/attestation-challenge$/)
+    if (request.method === 'POST' && videoAttestationMatch) return createVideoAttestationChallenge(request, env, videoAttestationMatch[1])
+    if (request.method === 'GET' && url.pathname === '/api/payments') return listPayments(request, env)
+    if (request.method === 'POST' && url.pathname === '/api/payments/request') return createPaymentRequest(request, env)
+    const paymentConfirmMatch = url.pathname.match(/^\/api\/payments\/([^/]+)\/confirm$/)
+    if (request.method === 'POST' && paymentConfirmMatch) return confirmPayment(request, env, paymentConfirmMatch[1])
     if (request.method === 'GET' && url.pathname === '/api/campaigns') return listCampaigns(request, env)
     if (request.method === 'POST' && url.pathname === '/api/campaigns') return createCampaign(request, env)
     const campaignMatch = url.pathname.match(/^\/api\/campaigns\/([^/]+)$/)

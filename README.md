@@ -18,6 +18,8 @@ Phase 3 협상 기반까지 구현했습니다.
 - 캠페인별 append-only 감사 API
 - 웹에서 두 에이전트가 조작하는 협상 작업대
 - 공개 YouTube 영상 확인·캠페인 연결·D1 등록
+- 기존 영상의 크리에이터 지갑 제출 서명 보강
+- Phantom에서 0.03 Devnet USDC 전송 및 Worker 온체인 검증
 - 데스크톱·태블릿·모바일 대응
 
 상단 캠페인 요약과 하단 협상 작업대는 Worker/D1의 실제 등록 영상을 표시합니다. 현재 YouTube 공개 여부는 공식 oEmbed 응답으로 확인하며, Google OAuth 채널 소유권 검증과 Solana 거래는 다음 단계입니다.
@@ -75,6 +77,15 @@ npx wrangler deploy --config worker/wrangler.jsonc
 - `GET /api/videos`
 - `POST /api/videos/challenge` — 공개 영상 확인 및 짧은 제출 서명 문구 발급
 - `POST /api/videos/submit` — 크리에이터 지갑 서명을 검증하고 제출 확정
+- `POST /api/videos/:submissionId/attestation-challenge` — 기존 등록 영상의 제출 서명 보강
+
+지급 API:
+
+- `GET /api/payments`
+- `POST /api/payments/request` — 영상 제출 서명 후 브랜드 지급 요청 생성
+- `POST /api/payments/:paymentId/confirm` — Solana 거래 서명 검증 및 지급 확정
+
+영상 공개 마일스톤은 공식 Circle Solana Devnet USDC mint `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`의 `0.03 USDC`만 허용합니다. Phantom이 거래와 필요한 크리에이터 Associated Token Account 생성을 직접 서명하며, Worker는 개인키를 보관하지 않습니다. Worker는 발신·수신 지갑, mint, 30,000 base units, CreatorFlow 지급 메모, 거래 성공 여부를 모두 확인한 뒤 감사 기록에 반영합니다.
 
 쓰기 요청은 등록 응답에서 받은 `Authorization: Bearer <sessionToken>`이 필요합니다. 세션은 24시간 뒤 만료됩니다.
 
