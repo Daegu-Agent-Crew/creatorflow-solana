@@ -73,7 +73,8 @@ npx wrangler deploy --config worker/wrangler.jsonc
 영상 API:
 
 - `GET /api/videos`
-- `POST /api/videos` — 크리에이터 세션 필요
+- `POST /api/videos/challenge` — 공개 영상 확인 및 짧은 제출 서명 문구 발급
+- `POST /api/videos/submit` — 크리에이터 지갑 서명을 검증하고 제출 확정
 
 쓰기 요청은 등록 응답에서 받은 `Authorization: Bearer <sessionToken>`이 필요합니다. 세션은 24시간 뒤 만료됩니다.
 
@@ -88,6 +89,8 @@ YouTube URL만으로는 에이전트가 만든 영상인지 확인할 수 없습
 5. 확인 시각의 공개 상태, 조회수, YouTube 응답 ETag 스냅샷
 
 1~2번은 해당 크리에이터가 관리하는 채널에 업로드됐음을 증명하고, 3~4번은 OpenClaw 에이전트 작업에서 나온 결과물임을 보강합니다. YouTube Data API만으로 영상 편집 주체까지 증명할 수는 없습니다. OAuth 토큰은 D1 원문 저장을 피하고 암호화된 서버 저장소에서 관리합니다.
+
+영상 제출 서명은 사용자에게 `영상 ID`, `짧은 확인번호`, `결제 권한 없음`만 보여 줍니다. Agent ID, 캠페인 ID, 제출 시간은 일회용 서명 문구 레코드에 서버가 자동으로 연결합니다.
 
 현재 배포된 등록 API: <https://creatorflow-api.sfex11.workers.dev/api/health>
 

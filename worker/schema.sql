@@ -109,6 +109,23 @@ CREATE TABLE IF NOT EXISTS deal_acceptances (
   FOREIGN KEY (accepted_by_agent_id) REFERENCES agents(id)
 );
 
+CREATE TABLE IF NOT EXISTS video_submission_challenges (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  campaign_id TEXT NOT NULL,
+  video_id TEXT NOT NULL,
+  message TEXT NOT NULL,
+  youtube_url TEXT NOT NULL,
+  title TEXT NOT NULL,
+  channel_title TEXT NOT NULL,
+  thumbnail_url TEXT,
+  expires_at TEXT NOT NULL,
+  used_at TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (agent_id) REFERENCES agents(id),
+  FOREIGN KEY (campaign_id) REFERENCES campaigns(id)
+);
+
 CREATE TABLE IF NOT EXISTS video_submissions (
   id TEXT PRIMARY KEY,
   campaign_id TEXT NOT NULL UNIQUE,
@@ -121,8 +138,11 @@ CREATE TABLE IF NOT EXISTS video_submissions (
   verification_status TEXT NOT NULL CHECK (verification_status IN ('public_verified', 'channel_verified')),
   created_at TEXT NOT NULL,
   verified_at TEXT NOT NULL,
+  submission_challenge_id TEXT UNIQUE,
+  creator_signature TEXT,
   FOREIGN KEY (campaign_id) REFERENCES campaigns(id),
-  FOREIGN KEY (creator_agent_id) REFERENCES agents(id)
+  FOREIGN KEY (creator_agent_id) REFERENCES agents(id),
+  FOREIGN KEY (submission_challenge_id) REFERENCES video_submission_challenges(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_challenges_wallet ON auth_challenges(wallet, created_at);
@@ -133,3 +153,4 @@ CREATE INDEX IF NOT EXISTS idx_campaigns_agents ON campaigns(brand_agent_id, cre
 CREATE INDEX IF NOT EXISTS idx_offers_campaign ON offers(campaign_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_campaign ON audit_events(campaign_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_video_submissions_creator ON video_submissions(creator_agent_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_video_submission_challenges_agent ON video_submission_challenges(agent_id, created_at);

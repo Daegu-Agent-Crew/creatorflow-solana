@@ -22,3 +22,13 @@ export function getYoutubeVideoId(value: unknown): string | null {
 export function canonicalYoutubeUrl(videoId: string) {
   return `https://www.youtube.com/watch?v=${videoId}`
 }
+
+export function buildVideoSubmissionMessage(input: { videoId: string; confirmationCode: string }) {
+  return [
+    'CreatorFlow 영상 제출',
+    `영상: ${input.videoId}`,
+    `확인번호: ${input.confirmationCode}`,
+    '이 영상을 제출합니다.',
+    '결제 권한 없음',
+  ].join('\n')
+}

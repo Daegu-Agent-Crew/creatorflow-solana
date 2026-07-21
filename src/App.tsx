@@ -3,7 +3,8 @@ import './App.css'
 import { RegistrationForm } from './RegistrationForm'
 import { AgentLoginForm } from './AgentLoginForm'
 import { NegotiationPanel } from './NegotiationPanel'
-import { getAgentSession, listAgents, listAuditEvents, listVideoSubmissions, registerVideoSubmission, type AuditEvent, type PublicAgent, type VideoSubmission } from './api'
+import { getAgentSession, listAgents, listAuditEvents, listVideoSubmissions, requestVideoSubmissionChallenge, submitSignedVideo, type AuditEvent, type PublicAgent, type VideoSubmission, type VideoSubmissionChallenge } from './api'
+import { connectPhantom, signPhantomMessage } from './phantom'
 
 type View = 'campaign' | 'agents' | 'activity'
 
@@ -50,6 +51,8 @@ function CampaignView({ onRegister }: { onRegister: () => void }) {
   const [videos, setVideos] = useState<VideoSubmission[]>([])
   const [videoMessage, setVideoMessage] = useState('')
   const [videoPending, setVideoPending] = useState(false)
+  const [submissionChallenge, setSubmissionChallenge] = useState<VideoSubmissionChallenge | null>(null)
+  const [submissionSignature, setSubmissionSignature] = useState('')
   const latestVideo = videos[0]
 
   useEffect(() => {
@@ -57,6 +60,13 @@ function CampaignView({ onRegister }: { onRegister: () => void }) {
       .then((result) => setVideos(result.videos))
       .catch((error) => setVideoMessage(error instanceof Error ? error.message : '등록 영상을 불러오지 못했습니다.'))
   }, [])
+
+  function finishVideoSubmission(registered: VideoSubmission) {
+    setVideos((current) => [registered, ...current.filter((video) => video.submissionId !== registered.submissionId)])
+    setSubmissionChallenge(null)
+    setSubmissionSignature('')
+    setVideoMessage(`제출 완료: ${registered.title}`)
+  }
 
   async function submitVideo(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -72,9 +82,23 @@ function CampaignView({ onRegister }: { onRegister: () => void }) {
     setVideoPending(true)
     setVideoMessage('')
     try {
-      const registered = await registerVideoSubmission(session, youtubeUrl)
-      setVideos((current) => [registered, ...current.filter((video) => video.submissionId !== registered.submissionId)])
-      setVideoMessage(`등록 완료: ${registered.title}`)
+      if (submissionChallenge) {
+        if (!submissionSignature.trim()) throw new Error('OpenClaw 지갑이 만든 서명을 입력해 주세요.')
+        finishVideoSubmission(await submitSignedVideo(session, submissionChallenge.challengeId, submissionSignature))
+        return
+      }
+
+      const challenge = await requestVideoSubmissionChallenge(session, youtubeUrl)
+      setSubmissionChallenge(challenge)
+      try {
+        const { provider, wallet } = await connectPhantom()
+        if (wallet !== session.wallet) throw new Error('로그인한 크리에이터 지갑과 Phantom 지갑이 다릅니다.')
+        const signature = await signPhantomMessage(provider, challenge.message)
+        setSubmissionSignature(signature)
+        finishVideoSubmission(await submitSignedVideo(session, challenge.challengeId, signature))
+      } catch (error) {
+        setVideoMessage(`${error instanceof Error ? error.message : 'Phantom 서명을 완료하지 못했습니다.'} OpenClaw을 사용한다면 아래 문구에 서명해 주세요.`)
+      }
     } catch (error) {
       setVideoMessage(error instanceof Error ? error.message : '영상을 등록하지 못했습니다.')
     } finally {
@@ -148,13 +172,19 @@ function CampaignView({ onRegister }: { onRegister: () => void }) {
           <form onSubmit={submitVideo}>
             <label className="field">
               <span>YouTube 영상 주소</span>
-              <input type="url" value={youtubeUrl} onChange={(event) => setYoutubeUrl(event.target.value)} placeholder="https://youtube.com/watch?v=…" required />
+              <input type="url" value={youtubeUrl} onChange={(event) => { setYoutubeUrl(event.target.value); setSubmissionChallenge(null); setSubmissionSignature('') }} disabled={Boolean(submissionChallenge)} placeholder="https://youtube.com/watch?v=…" required />
             </label>
-            <button className="primary-button full-button" disabled={videoPending}>{videoPending ? 'YouTube 확인 중…' : latestVideo ? '다른 영상 등록' : '영상 확인 및 등록'}</button>
+            {submissionChallenge ? (
+              <>
+                <div className="challenge-box simple-signature"><div><strong>대구루가 확인할 내용</strong><button className="copy-button" type="button" onClick={() => navigator.clipboard.writeText(submissionChallenge.message)}>복사</button></div><pre>{submissionChallenge.message}</pre></div>
+                <label className="field"><span>OpenClaw 서명 결과</span><input value={submissionSignature} onChange={(event) => setSubmissionSignature(event.target.value)} placeholder="Base58 서명" /></label>
+              </>
+            ) : null}
+            <button className="primary-button full-button" disabled={videoPending}>{videoPending ? '처리 중…' : submissionChallenge ? '서명 확인 및 제출' : '지갑으로 서명하고 제출'}</button>
           </form>
           {videoMessage ? <p className="api-message" role="status">{videoMessage}</p> : null}
           {!getAgentSession() ? <button className="secondary-button full-button login-helper" onClick={onRegister}>크리에이터 로그인</button> : null}
-          <p className="helper-text">지갑 개인키는 웹페이지로 전송하지 않습니다.</p>
+          <p className="helper-text">영상 제출만 승인합니다. 결제 권한은 없으며 지갑 개인키는 전송하지 않습니다.</p>
           <div className="allowance-line">
             <div><span>지급 허용 한도</span><strong>0.08 / 0.10 USDC</strong></div>
             <progress value="0.08" max="0.1">80%</progress>

@@ -1,6 +1,6 @@
 import { buildChallengeMessage, buildLoginChallengeMessage, decodePublicKey, isValidAgentName, parseRole, sha256, verifyWalletSignature } from './security'
 import { parseOfferKind, validateOfferTerms } from './negotiation'
-import { canonicalYoutubeUrl, getYoutubeVideoId } from './youtube'
+import { buildVideoSubmissionMessage, canonicalYoutubeUrl, getYoutubeVideoId } from './youtube'
 
 interface Env {
   DB: D1Database
@@ -338,7 +338,7 @@ async function listVideoSubmissions(request: Request, env: Env) {
   })) })
 }
 
-async function registerVideoSubmission(request: Request, env: Env) {
+async function createVideoSubmissionChallenge(request: Request, env: Env) {
   const agent = await authenticateAgent(request, env)
   if (agent instanceof Response) return agent
   if (agent.role !== 'creator') return error(request, env, 'ROLE_FORBIDDEN', '크리에이터 에이전트로 로그인해야 영상을 등록할 수 있습니다.', 403)
@@ -352,14 +352,43 @@ async function registerVideoSubmission(request: Request, env: Env) {
   const verified = await verifyPublicYoutubeVideo(videoId)
   if (!verified) return error(request, env, 'YOUTUBE_NOT_PUBLIC', 'YouTube에서 공개 영상을 확인할 수 없습니다. 비공개 상태인지 확인해 주세요.', 422)
 
+  const challengeId = crypto.randomUUID()
+  const confirmationCode = challengeId.replaceAll('-', '').slice(0, 8).toUpperCase()
+  const createdAt = new Date().toISOString()
+  const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString()
+  const message = buildVideoSubmissionMessage({ videoId, confirmationCode })
+  await env.DB.prepare(`INSERT INTO video_submission_challenges (id, agent_id, campaign_id, video_id, message, youtube_url, title, channel_title, thumbnail_url, expires_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(challengeId, agent.id, campaign.id, videoId, message, verified.youtubeUrl, verified.title, verified.channelTitle, verified.thumbnailUrl, expiresAt, createdAt).run()
+  return json(request, env, { challengeId, message, expiresAt, videoId, title: verified.title, channelTitle: verified.channelTitle, thumbnailUrl: verified.thumbnailUrl }, 201)
+}
+
+async function submitSignedVideo(request: Request, env: Env) {
+  const agent = await authenticateAgent(request, env)
+  if (agent instanceof Response) return agent
+  if (agent.role !== 'creator') return error(request, env, 'ROLE_FORBIDDEN', '크리에이터 에이전트로 로그인해야 영상을 제출할 수 있습니다.', 403)
+  const body = await readBody(request)
+  const challengeId = typeof body?.challengeId === 'string' ? body.challengeId : ''
+  const signature = typeof body?.signature === 'string' ? body.signature.trim() : ''
+  if (!challengeId || !signature) return error(request, env, 'INVALID_SUBMISSION', '영상 제출 서명 정보가 올바르지 않습니다.', 400)
+
+  const challenge = await env.DB.prepare(`SELECT v.id, v.agent_id, v.campaign_id, c.title AS campaign_title, v.video_id, v.message, v.youtube_url, v.title, v.channel_title, v.thumbnail_url, v.expires_at, v.used_at
+    FROM video_submission_challenges v JOIN campaigns c ON c.id = v.campaign_id WHERE v.id = ?`).bind(challengeId).first<{
+      id: string; agent_id: string; campaign_id: string; campaign_title: string; video_id: string; message: string; youtube_url: string; title: string; channel_title: string; thumbnail_url: string | null; expires_at: string; used_at: string | null
+    }>()
+  if (!challenge || challenge.agent_id !== agent.id) return error(request, env, 'CHALLENGE_NOT_FOUND', '영상 제출 서명 문구를 찾을 수 없습니다.', 404)
+  if (challenge.used_at || challenge.expires_at <= new Date().toISOString()) return error(request, env, 'CHALLENGE_EXPIRED', '영상 제출 서명 문구가 만료됐거나 이미 사용됐습니다.', 409)
+  if (!verifyWalletSignature({ message: challenge.message, signature, wallet: agent.wallet })) return error(request, env, 'INVALID_SIGNATURE', '크리에이터 지갑 서명을 확인할 수 없습니다.', 401)
+
   const submissionId = `vid_${crypto.randomUUID().replaceAll('-', '').slice(0, 20)}`
   const createdAt = new Date().toISOString()
   try {
     await env.DB.batch([
-      env.DB.prepare(`INSERT INTO video_submissions (id, campaign_id, creator_agent_id, video_id, youtube_url, title, channel_title, thumbnail_url, verification_status, created_at, verified_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'public_verified', ?, ?)`)
-        .bind(submissionId, campaign.id, agent.id, videoId, verified.youtubeUrl, verified.title, verified.channelTitle, verified.thumbnailUrl, createdAt, createdAt),
-      audit(env, { agentId: agent.id, campaignId: campaign.id, eventType: 'youtube.video_registered', payload: { submissionId, videoId, title: verified.title, channelTitle: verified.channelTitle, verificationStatus: 'public_verified' }, createdAt }),
+      env.DB.prepare(`INSERT INTO video_submissions (id, campaign_id, creator_agent_id, video_id, youtube_url, title, channel_title, thumbnail_url, verification_status, created_at, verified_at, submission_challenge_id, creator_signature)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'public_verified', ?, ?, ?, ?)`)
+        .bind(submissionId, challenge.campaign_id, agent.id, challenge.video_id, challenge.youtube_url, challenge.title, challenge.channel_title, challenge.thumbnail_url, createdAt, createdAt, challenge.id, signature),
+      env.DB.prepare('UPDATE video_submission_challenges SET used_at = ? WHERE id = ? AND used_at IS NULL').bind(createdAt, challenge.id),
+      audit(env, { agentId: agent.id, campaignId: challenge.campaign_id, eventType: 'youtube.video_registered', payload: { submissionId, videoId: challenge.video_id, title: challenge.title, channelTitle: challenge.channel_title, verificationStatus: 'public_verified', creatorSigned: true }, createdAt }),
     ])
   } catch (cause) {
     if (cause instanceof Error && cause.message.includes('UNIQUE constraint failed')) return error(request, env, 'VIDEO_ALREADY_REGISTERED', '이 캠페인 또는 영상은 이미 등록되어 있습니다.', 409)
@@ -367,15 +396,15 @@ async function registerVideoSubmission(request: Request, env: Env) {
   }
   return json(request, env, {
     submissionId,
-    campaignId: campaign.id,
-    campaignTitle: campaign.title,
+    campaignId: challenge.campaign_id,
+    campaignTitle: challenge.campaign_title,
     creatorAgentId: agent.id,
     creatorName: agent.name,
-    videoId,
-    youtubeUrl: verified.youtubeUrl,
-    title: verified.title,
-    channelTitle: verified.channelTitle,
-    thumbnailUrl: verified.thumbnailUrl,
+    videoId: challenge.video_id,
+    youtubeUrl: challenge.youtube_url,
+    title: challenge.title,
+    channelTitle: challenge.channel_title,
+    thumbnailUrl: challenge.thumbnail_url,
     verificationStatus: 'public_verified',
     createdAt,
     verifiedAt: createdAt,
@@ -394,7 +423,8 @@ export default {
     if (request.method === 'GET' && url.pathname === '/api/agents') return listAgents(request, env)
     if (request.method === 'GET' && url.pathname === '/api/audit') return listAuditEvents(request, env)
     if (request.method === 'GET' && url.pathname === '/api/videos') return listVideoSubmissions(request, env)
-    if (request.method === 'POST' && url.pathname === '/api/videos') return registerVideoSubmission(request, env)
+    if (request.method === 'POST' && url.pathname === '/api/videos/challenge') return createVideoSubmissionChallenge(request, env)
+    if (request.method === 'POST' && url.pathname === '/api/videos/submit') return submitSignedVideo(request, env)
     if (request.method === 'GET' && url.pathname === '/api/campaigns') return listCampaigns(request, env)
     if (request.method === 'POST' && url.pathname === '/api/campaigns') return createCampaign(request, env)
     const campaignMatch = url.pathname.match(/^\/api\/campaigns\/([^/]+)$/)

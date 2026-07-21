@@ -76,6 +76,16 @@ export type VideoSubmission = {
   verifiedAt: string
 }
 
+export type VideoSubmissionChallenge = {
+  challengeId: string
+  message: string
+  expiresAt: string
+  videoId: string
+  title: string
+  channelTitle: string
+  thumbnailUrl: string | null
+}
+
 const sessionKey = 'creatorflow.agent-session'
 
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '')
@@ -170,9 +180,15 @@ export function listVideoSubmissions() {
   return request<{ videos: VideoSubmission[] }>('/api/videos')
 }
 
-export function registerVideoSubmission(session: AgentSession, youtubeUrl: string) {
-  return request<VideoSubmission>('/api/videos', {
+export function requestVideoSubmissionChallenge(session: AgentSession, youtubeUrl: string) {
+  return request<VideoSubmissionChallenge>('/api/videos/challenge', {
     method: 'POST', headers: authenticatedHeaders(session), body: JSON.stringify({ youtubeUrl: youtubeUrl.trim() }),
+  })
+}
+
+export function submitSignedVideo(session: AgentSession, challengeId: string, signature: string) {
+  return request<VideoSubmission>('/api/videos/submit', {
+    method: 'POST', headers: authenticatedHeaders(session), body: JSON.stringify({ challengeId, signature: signature.trim() }),
   })
 }
 
