@@ -8,6 +8,8 @@ import { connectPhantom, signPhantomMessage } from './phantom'
 import { PaymentPanel } from './PaymentPanel'
 import { CreatorPipeline } from './CreatorPipeline'
 import { WalletDelegationPanel } from './WalletDelegationPanel'
+import { CreatorInvitePage } from './CreatorInvitePage'
+import { WalletRecoveryPanel } from './WalletRecoveryPanel'
 
 type View = 'campaign' | 'agents' | 'activity'
 
@@ -254,6 +256,7 @@ function AgentsView() {
         ? <AgentLoginForm onLoggedIn={() => setRefreshKey((current) => current + 1)} />
         : <RegistrationForm onRegistered={() => setRefreshKey((current) => current + 1)} />}
       <WalletDelegationPanel refreshKey={refreshKey} />
+      <WalletRecoveryPanel />
       <AgentDirectory refreshKey={refreshKey} />
     </section>
   )
@@ -293,12 +296,15 @@ function ActivityView() {
 }
 
 function App() {
+  const inviteToken = new URLSearchParams(window.location.search).get('invite')
   const [view, setView] = useState<View>('campaign')
   const navItems: Array<{ id: View; label: string }> = [
     { id: 'campaign', label: '캠페인' },
     { id: 'agents', label: '에이전트' },
     { id: 'activity', label: '활동 기록' },
   ]
+
+  if (inviteToken) return <CreatorInvitePage token={inviteToken} />
 
   return (
     <div className="app-shell">

@@ -98,6 +98,7 @@ export type PaymentRequest = {
 export type WalletDelegation = {
   delegationId: string
   brandAgentId: string
+  campaignId: string | null
   ownerWallet: string
   delegateWallet: string
   tokenAccount: string
@@ -130,8 +131,54 @@ export type PipelineCreator = {
 }
 
 export type CreatorFlow2Pipeline = {
-  campaign: { title: string; network: string; campaignCapUsdc: string; dailyAiCapUsdc: string }
+  campaign: { id: string | null; title: string; network: string; campaignCapUsdc: string; dailyAiCapUsdc: string }
   creators: PipelineCreator[]
+}
+
+export type CreatorOfferV2 = {
+  offerId: string
+  campaignId: string
+  campaignTitle?: string
+  creatorName: string
+  youtubeChannel: string
+  creatorWallet: string | null
+  fitScore: number
+  amountBaseUnits: string
+  amountUsdc: string
+  aiRationale: string
+  status: 'proposed' | 'accepted' | 'submitted' | 'verified' | 'paid' | 'rejected' | 'expired'
+  video: null | { videoId: string; youtubeUrl: string; title: string; channelTitle: string; thumbnailUrl: string | null }
+  expiresAt: string
+  acceptedAt: string | null
+  submittedAt: string | null
+  verifiedAt: string | null
+  paidAt: string | null
+  updatedAt: string
+}
+
+export type CreatorActionChallenge = {
+  challengeId: string
+  action: 'accept' | 'submit'
+  message: string
+  expiresAt: string
+  video: null | { videoId: string; youtubeUrl: string; title: string; channelTitle: string; thumbnailUrl: string | null }
+}
+
+export type CreatorPaymentV2 = {
+  paymentId: string
+  offerId: string
+  campaignId: string
+  senderWallet: string
+  authorityWallet: string
+  recipientWallet: string
+  mint: string
+  amountBaseUnits: string
+  amountUsdc: string
+  memo: string
+  status: 'prepared' | 'confirmed'
+  transactionSignature: string | null
+  createdAt: string
+  confirmedAt: string | null
 }
 
 export type VideoSubmissionChallenge = {
@@ -264,6 +311,46 @@ export function getCreatorFlow2Pipeline() {
   return request<CreatorFlow2Pipeline>('/api/creatorflow2/pipeline')
 }
 
+export function createCreatorOfferV2(session: AgentSession, input: { campaignId: string; creatorName: string; youtubeChannel: string; creatorWallet?: string; fitScore: number; aiRationale?: string }) {
+  return request<{ offer: CreatorOfferV2; inviteToken: string }>('/api/creatorflow2/offers', {
+    method: 'POST', headers: authenticatedHeaders(session), body: JSON.stringify(input),
+  })
+}
+
+export function getCreatorInviteV2(token: string) {
+  return request<{ offer: CreatorOfferV2 }>(`/api/creatorflow2/invites/${token}`)
+}
+
+export function requestCreatorInviteChallengeV2(token: string, input: { action: 'accept' | 'submit'; wallet: string; youtubeUrl?: string }) {
+  return request<CreatorActionChallenge>(`/api/creatorflow2/invites/${token}/challenge`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input),
+  })
+}
+
+export function completeCreatorInviteActionV2(token: string, challengeId: string, signature: string) {
+  return request<{ offer: CreatorOfferV2 }>(`/api/creatorflow2/invites/${token}/complete`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ challengeId, signature }),
+  })
+}
+
+export function prepareCreatorPaymentV2(session: AgentSession, offerId: string) {
+  return request<{ payment: CreatorPaymentV2 }>(`/api/creatorflow2/offers/${offerId}/payment`, {
+    method: 'POST', headers: authenticatedHeaders(session), body: '{}',
+  })
+}
+
+export function broadcastCreatorPaymentV2(session: AgentSession, paymentId: string, signedTransactionBase64: string) {
+  return request<{ payment: CreatorPaymentV2 }>(`/api/creatorflow2/payments/${paymentId}/broadcast`, {
+    method: 'POST', headers: authenticatedHeaders(session), body: JSON.stringify({ signedTransactionBase64 }),
+  })
+}
+
+export function confirmCreatorPaymentV2(session: AgentSession, paymentId: string, transactionSignature: string) {
+  return request<{ payment: CreatorPaymentV2 }>(`/api/creatorflow2/payments/${paymentId}/confirm`, {
+    method: 'POST', headers: authenticatedHeaders(session), body: JSON.stringify({ transactionSignature }),
+  })
+}
+
 export function createPaymentRequest(session: AgentSession, campaignId: string) {
   return request<PaymentRequest>('/api/payments/request', {
     method: 'POST', headers: authenticatedHeaders(session), body: JSON.stringify({ campaignId }),
@@ -276,19 +363,26 @@ export function confirmPayment(session: AgentSession, paymentId: string, transac
   })
 }
 
-export function getWalletDelegation(session: AgentSession) {
-  return request<{ delegation: WalletDelegation | null }>('/api/delegations/current', { headers: authenticatedHeaders(session) })
+export function getWalletDelegation(session: AgentSession, campaignId?: string) {
+  const query = campaignId ? `?campaignId=${encodeURIComponent(campaignId)}` : ''
+  return request<{ delegation: WalletDelegation | null }>(`/api/delegations/current${query}`, { headers: authenticatedHeaders(session) })
 }
 
-export function confirmWalletDelegation(session: AgentSession, input: { ownerWallet: string; transactionSignature: string; allowanceBaseUnits: string }) {
+export function confirmWalletDelegation(session: AgentSession, input: { campaignId: string; ownerWallet: string; transactionSignature: string; allowanceBaseUnits: string }) {
   return request<{ delegation: WalletDelegation }>('/api/delegations/confirm', {
     method: 'POST', headers: authenticatedHeaders(session), body: JSON.stringify(input),
   })
 }
 
-export function confirmWalletDelegationRevocation(session: AgentSession, transactionSignature: string) {
+export function findWalletDelegationRecovery(ownerWallet: string, campaignId: string) {
+  return request<{ delegation: WalletDelegation }>('/api/delegations/recovery', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ownerWallet, campaignId }),
+  })
+}
+
+export function confirmWalletDelegationRevocation(delegationId: string, transactionSignature: string) {
   return request<{ delegation: WalletDelegation }>('/api/delegations/revoke/confirm', {
-    method: 'POST', headers: authenticatedHeaders(session), body: JSON.stringify({ transactionSignature }),
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ delegationId, transactionSignature }),
   })
 }
 
