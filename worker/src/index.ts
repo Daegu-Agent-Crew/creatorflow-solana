@@ -1,5 +1,6 @@
 import { buildChallengeMessage, buildLoginChallengeMessage, decodePublicKey, isValidAgentName, parseRole, sha256, verifyWalletSignature } from './security'
 import { parseOfferKind, validateOfferTerms } from './negotiation'
+import { canonicalYoutubeUrl, getYoutubeVideoId } from './youtube'
 
 interface Env {
   DB: D1Database
@@ -9,6 +10,7 @@ interface Env {
 type JsonRecord = Record<string, unknown>
 type AgentRow = { id: string; name: string; role: 'brand' | 'creator'; wallet: string }
 type CampaignRow = { id: string; title: string; brand_agent_id: string; creator_agent_id: string | null; status: 'negotiating' | 'accepted' | 'cancelled'; accepted_offer_id: string | null; created_at: string; updated_at: string }
+type VideoSubmissionRow = { id: string; campaign_id: string; campaign_title: string; creator_agent_id: string; creator_name: string; video_id: string; youtube_url: string; title: string; channel_title: string; thumbnail_url: string | null; verification_status: 'public_verified' | 'channel_verified'; created_at: string; verified_at: string }
 
 function corsHeaders(request: Request, env: Env) {
   const origin = request.headers.get('origin') ?? ''
@@ -296,6 +298,90 @@ async function getAudit(request: Request, env: Env, campaignId: string) {
   return json(request, env, { campaignId, events: events.results })
 }
 
+async function verifyPublicYoutubeVideo(videoId: string) {
+  const youtubeUrl = canonicalYoutubeUrl(videoId)
+  const response = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(youtubeUrl)}&format=json`, {
+    headers: { accept: 'application/json' },
+  })
+  if (!response.ok) return null
+  const payload = await response.json() as { title?: unknown; author_name?: unknown; thumbnail_url?: unknown }
+  const title = typeof payload.title === 'string' ? payload.title.trim() : ''
+  const channelTitle = typeof payload.author_name === 'string' ? payload.author_name.trim() : ''
+  if (!title || !channelTitle) return null
+  return {
+    youtubeUrl,
+    title: title.slice(0, 200),
+    channelTitle: channelTitle.slice(0, 200),
+    thumbnailUrl: typeof payload.thumbnail_url === 'string' ? payload.thumbnail_url : null,
+  }
+}
+
+async function listVideoSubmissions(request: Request, env: Env) {
+  const rows = await env.DB.prepare(`SELECT v.id, v.campaign_id, c.title AS campaign_title, v.creator_agent_id, a.name AS creator_name,
+    v.video_id, v.youtube_url, v.title, v.channel_title, v.thumbnail_url, v.verification_status, v.created_at, v.verified_at
+    FROM video_submissions v JOIN campaigns c ON c.id = v.campaign_id JOIN agents a ON a.id = v.creator_agent_id
+    ORDER BY v.created_at DESC LIMIT 20`).all<VideoSubmissionRow>()
+  return json(request, env, { videos: rows.results.map((video) => ({
+    submissionId: video.id,
+    campaignId: video.campaign_id,
+    campaignTitle: video.campaign_title,
+    creatorAgentId: video.creator_agent_id,
+    creatorName: video.creator_name,
+    videoId: video.video_id,
+    youtubeUrl: video.youtube_url,
+    title: video.title,
+    channelTitle: video.channel_title,
+    thumbnailUrl: video.thumbnail_url,
+    verificationStatus: video.verification_status,
+    createdAt: video.created_at,
+    verifiedAt: video.verified_at,
+  })) })
+}
+
+async function registerVideoSubmission(request: Request, env: Env) {
+  const agent = await authenticateAgent(request, env)
+  if (agent instanceof Response) return agent
+  if (agent.role !== 'creator') return error(request, env, 'ROLE_FORBIDDEN', '크리에이터 에이전트로 로그인해야 영상을 등록할 수 있습니다.', 403)
+  const body = await readBody(request)
+  const videoId = getYoutubeVideoId(body?.youtubeUrl)
+  if (!videoId) return error(request, env, 'INVALID_YOUTUBE_URL', '올바른 YouTube 영상 주소를 입력해 주세요.', 400)
+
+  const campaign = await env.DB.prepare(`SELECT id, title FROM campaigns WHERE creator_agent_id = ? AND status IN ('negotiating', 'accepted') ORDER BY created_at DESC LIMIT 1`)
+    .bind(agent.id).first<{ id: string; title: string }>()
+  if (!campaign) return error(request, env, 'CAMPAIGN_NOT_FOUND', '이 크리에이터가 참여 중인 캠페인을 찾을 수 없습니다.', 409)
+  const verified = await verifyPublicYoutubeVideo(videoId)
+  if (!verified) return error(request, env, 'YOUTUBE_NOT_PUBLIC', 'YouTube에서 공개 영상을 확인할 수 없습니다. 비공개 상태인지 확인해 주세요.', 422)
+
+  const submissionId = `vid_${crypto.randomUUID().replaceAll('-', '').slice(0, 20)}`
+  const createdAt = new Date().toISOString()
+  try {
+    await env.DB.batch([
+      env.DB.prepare(`INSERT INTO video_submissions (id, campaign_id, creator_agent_id, video_id, youtube_url, title, channel_title, thumbnail_url, verification_status, created_at, verified_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'public_verified', ?, ?)`)
+        .bind(submissionId, campaign.id, agent.id, videoId, verified.youtubeUrl, verified.title, verified.channelTitle, verified.thumbnailUrl, createdAt, createdAt),
+      audit(env, { agentId: agent.id, campaignId: campaign.id, eventType: 'youtube.video_registered', payload: { submissionId, videoId, title: verified.title, channelTitle: verified.channelTitle, verificationStatus: 'public_verified' }, createdAt }),
+    ])
+  } catch (cause) {
+    if (cause instanceof Error && cause.message.includes('UNIQUE constraint failed')) return error(request, env, 'VIDEO_ALREADY_REGISTERED', '이 캠페인 또는 영상은 이미 등록되어 있습니다.', 409)
+    throw cause
+  }
+  return json(request, env, {
+    submissionId,
+    campaignId: campaign.id,
+    campaignTitle: campaign.title,
+    creatorAgentId: agent.id,
+    creatorName: agent.name,
+    videoId,
+    youtubeUrl: verified.youtubeUrl,
+    title: verified.title,
+    channelTitle: verified.channelTitle,
+    thumbnailUrl: verified.thumbnailUrl,
+    verificationStatus: 'public_verified',
+    createdAt,
+    verifiedAt: createdAt,
+  }, 201)
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: corsHeaders(request, env) })
@@ -307,6 +393,8 @@ export default {
     if (request.method === 'POST' && url.pathname === '/api/agents/login') return loginAgent(request, env)
     if (request.method === 'GET' && url.pathname === '/api/agents') return listAgents(request, env)
     if (request.method === 'GET' && url.pathname === '/api/audit') return listAuditEvents(request, env)
+    if (request.method === 'GET' && url.pathname === '/api/videos') return listVideoSubmissions(request, env)
+    if (request.method === 'POST' && url.pathname === '/api/videos') return registerVideoSubmission(request, env)
     if (request.method === 'GET' && url.pathname === '/api/campaigns') return listCampaigns(request, env)
     if (request.method === 'POST' && url.pathname === '/api/campaigns') return createCampaign(request, env)
     const campaignMatch = url.pathname.match(/^\/api\/campaigns\/([^/]+)$/)

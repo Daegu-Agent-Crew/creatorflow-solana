@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import './App.css'
 import { RegistrationForm } from './RegistrationForm'
 import { AgentLoginForm } from './AgentLoginForm'
 import { NegotiationPanel } from './NegotiationPanel'
-import { listAgents, listAuditEvents, type AuditEvent, type PublicAgent } from './api'
+import { getAgentSession, listAgents, listAuditEvents, listVideoSubmissions, registerVideoSubmission, type AuditEvent, type PublicAgent, type VideoSubmission } from './api'
 
 type View = 'campaign' | 'agents' | 'activity'
 
@@ -21,6 +21,7 @@ const eventLabels: Record<string, string> = {
   'offer.countered': '수정 조건 제안',
   'offer.rejected': '제안 거절',
   'deal.accepted': '계약 수락',
+  'youtube.video_registered': 'YouTube 영상 등록',
 }
 
 function shortWallet(wallet: string) {
@@ -45,6 +46,42 @@ function WalletStatus() {
 }
 
 function CampaignView({ onRegister }: { onRegister: () => void }) {
+  const [youtubeUrl, setYoutubeUrl] = useState('https://youtu.be/I96Mwbm7Tp0')
+  const [videos, setVideos] = useState<VideoSubmission[]>([])
+  const [videoMessage, setVideoMessage] = useState('')
+  const [videoPending, setVideoPending] = useState(false)
+  const latestVideo = videos[0]
+
+  useEffect(() => {
+    listVideoSubmissions()
+      .then((result) => setVideos(result.videos))
+      .catch((error) => setVideoMessage(error instanceof Error ? error.message : '등록 영상을 불러오지 못했습니다.'))
+  }, [])
+
+  async function submitVideo(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const session = getAgentSession()
+    if (!session) {
+      setVideoMessage('먼저 에이전트 탭에서 크리에이터 지갑으로 로그인해 주세요.')
+      return
+    }
+    if (session.role !== 'creator') {
+      setVideoMessage('현재 브랜드 에이전트로 로그인되어 있습니다. 크리에이터 에이전트로 다시 로그인해 주세요.')
+      return
+    }
+    setVideoPending(true)
+    setVideoMessage('')
+    try {
+      const registered = await registerVideoSubmission(session, youtubeUrl)
+      setVideos((current) => [registered, ...current.filter((video) => video.submissionId !== registered.submissionId)])
+      setVideoMessage(`등록 완료: ${registered.title}`)
+    } catch (error) {
+      setVideoMessage(error instanceof Error ? error.message : '영상을 등록하지 못했습니다.')
+    } finally {
+      setVideoPending(false)
+    }
+  }
+
   return (
     <section className="page-stack">
       <header className="page-heading">
@@ -57,7 +94,7 @@ function CampaignView({ onRegister }: { onRegister: () => void }) {
       </header>
 
       <div className="summary-bar" aria-label="캠페인 요약">
-        <div><span>현재 단계</span><strong>영상 공개 대기</strong></div>
+        <div><span>현재 단계</span><strong>{latestVideo ? '성과 확인 대기' : '영상 공개 대기'}</strong></div>
         <div><span>예산 한도</span><strong>0.10 USDC</strong></div>
         <div><span>등록 에이전트</span><strong>2개</strong></div>
         <div><span>네트워크</span><strong>Solana Devnet</strong></div>
@@ -80,28 +117,43 @@ function CampaignView({ onRegister }: { onRegister: () => void }) {
           </dl>
 
           <div className="timeline">
-            {milestones.map((item, index) => (
+            {milestones.map((item, index) => {
+              const videoComplete = index === 1 && latestVideo
+              return (
               <div className={`timeline-row step-${index + 1}`} key={item.label}>
                 <span className="step-number">{index + 1}</span>
                 <div>
                   <strong>{item.label}</strong>
-                  <p>{item.detail}</p>
+                  <p>{videoComplete ? `${latestVideo.title} 공개 확인 완료` : item.detail}</p>
                 </div>
-                <div className="step-meta"><strong>{item.amount}</strong><span>{item.state}</span></div>
+                <div className="step-meta"><strong>{item.amount}</strong><span>{videoComplete ? '완료' : item.state}</span></div>
               </div>
-            ))}
+              )
+            })}
           </div>
         </article>
 
         <aside className="side-panel">
           <span className="kicker">지금 할 일</span>
-          <h2>크리에이터 영상을 제출하세요</h2>
-          <p>공개된 YouTube 영상 주소를 등록하면 채널 소유권과 공개 상태를 확인합니다.</p>
-          <label className="field">
-            <span>YouTube 영상 주소</span>
-            <input type="url" placeholder="https://youtube.com/watch?v=…" />
-          </label>
-          <button className="primary-button full-button">영상 확인 시작</button>
+          <h2>{latestVideo ? '등록된 크리에이터 영상' : '크리에이터 영상을 제출하세요'}</h2>
+          {latestVideo ? (
+            <div className="video-result">
+              {latestVideo.thumbnailUrl ? <img src={latestVideo.thumbnailUrl} alt={`${latestVideo.title} 썸네일`} /> : null}
+              <strong>{latestVideo.title}</strong>
+              <span>{latestVideo.channelTitle} · {latestVideo.creatorName}</span>
+              <a href={latestVideo.youtubeUrl} target="_blank" rel="noreferrer">YouTube에서 보기</a>
+              <small>공개 영상 확인 완료 · 채널 OAuth 확인 전</small>
+            </div>
+          ) : <p>공개된 YouTube 영상을 확인한 뒤 캠페인과 크리에이터 Agent ID에 연결합니다.</p>}
+          <form onSubmit={submitVideo}>
+            <label className="field">
+              <span>YouTube 영상 주소</span>
+              <input type="url" value={youtubeUrl} onChange={(event) => setYoutubeUrl(event.target.value)} placeholder="https://youtube.com/watch?v=…" required />
+            </label>
+            <button className="primary-button full-button" disabled={videoPending}>{videoPending ? 'YouTube 확인 중…' : latestVideo ? '다른 영상 등록' : '영상 확인 및 등록'}</button>
+          </form>
+          {videoMessage ? <p className="api-message" role="status">{videoMessage}</p> : null}
+          {!getAgentSession() ? <button className="secondary-button full-button login-helper" onClick={onRegister}>크리에이터 로그인</button> : null}
           <p className="helper-text">지갑 개인키는 웹페이지로 전송하지 않습니다.</p>
           <div className="allowance-line">
             <div><span>지급 허용 한도</span><strong>0.08 / 0.10 USDC</strong></div>

@@ -60,6 +60,22 @@ export type AuditEvent = {
   createdAt: string
 }
 
+export type VideoSubmission = {
+  submissionId: string
+  campaignId: string
+  campaignTitle: string
+  creatorAgentId: string
+  creatorName: string
+  videoId: string
+  youtubeUrl: string
+  title: string
+  channelTitle: string
+  thumbnailUrl: string | null
+  verificationStatus: 'public_verified' | 'channel_verified'
+  createdAt: string
+  verifiedAt: string
+}
+
 const sessionKey = 'creatorflow.agent-session'
 
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '')
@@ -148,6 +164,16 @@ export function listAgents() {
 
 export function listAuditEvents() {
   return request<{ events: AuditEvent[] }>('/api/audit')
+}
+
+export function listVideoSubmissions() {
+  return request<{ videos: VideoSubmission[] }>('/api/videos')
+}
+
+export function registerVideoSubmission(session: AgentSession, youtubeUrl: string) {
+  return request<VideoSubmission>('/api/videos', {
+    method: 'POST', headers: authenticatedHeaders(session), body: JSON.stringify({ youtubeUrl: youtubeUrl.trim() }),
+  })
 }
 
 export function getCampaign(campaignId: string) {

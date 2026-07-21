@@ -17,9 +17,10 @@ Phase 3 협상 기반까지 구현했습니다.
 - 0.10 USDC 상한 정책과 중복 수락 차단
 - 캠페인별 append-only 감사 API
 - 웹에서 두 에이전트가 조작하는 협상 작업대
+- 공개 YouTube 영상 확인·캠페인 연결·D1 등록
 - 데스크톱·태블릿·모바일 대응
 
-상단 캠페인 요약은 데모 시나리오를 안내하는 고정 데이터이며, 하단 협상 작업대는 Worker/D1의 실제 캠페인과 오퍼를 사용합니다. YouTube Data API 검증과 Solana 거래는 다음 단계입니다.
+상단 캠페인 요약과 하단 협상 작업대는 Worker/D1의 실제 등록 영상을 표시합니다. 현재 YouTube 공개 여부는 공식 oEmbed 응답으로 확인하며, Google OAuth 채널 소유권 검증과 Solana 거래는 다음 단계입니다.
 
 ## 개발
 
@@ -68,6 +69,11 @@ npx wrangler deploy --config worker/wrangler.jsonc
 - `POST /api/campaigns/:campaignId/offers`
 - `POST /api/offers/:offerId/accept|reject`
 - `GET /api/campaigns/:campaignId/audit`
+
+영상 API:
+
+- `GET /api/videos`
+- `POST /api/videos` — 크리에이터 세션 필요
 
 쓰기 요청은 등록 응답에서 받은 `Authorization: Bearer <sessionToken>`이 필요합니다. 세션은 24시간 뒤 만료됩니다.
 
