@@ -48,21 +48,6 @@ export function buildLoginChallengeMessage(input: { id: string; agentId: string;
   ].join('\n')
 }
 
-export function buildCreatorOfferActionMessage(input: { action: 'accept' | 'submit'; offerId: string; campaignId: string; wallet: string; amountUsdc: string; videoId?: string; confirmationCode: string }) {
-  const lines = [
-    input.action === 'accept' ? 'CreatorFlow 제안 수락' : 'CreatorFlow 영상 제출',
-    `캠페인: ${input.campaignId}`,
-    `제안: ${input.offerId}`,
-    `지갑: ${input.wallet}`,
-    `금액: ${input.amountUsdc} USDC`,
-  ]
-  if (input.videoId) lines.push(`영상: ${input.videoId}`)
-  lines.push(`확인번호: ${input.confirmationCode}`)
-  lines.push(input.action === 'accept' ? '이 제안을 수락합니다.' : '이 영상을 제출합니다.')
-  lines.push('이 서명은 결제 권한을 부여하지 않습니다.')
-  return lines.join('\n')
-}
-
 export function verifyWalletSignature(input: { message: string; signature: string; wallet: string }) {
   const publicKey = decodePublicKey(input.wallet)
   if (!publicKey) return false

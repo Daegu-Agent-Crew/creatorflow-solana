@@ -1,4 +1,4 @@
-import { buildChallengeMessage, buildCreatorOfferActionMessage, buildLoginChallengeMessage, decodePublicKey, isValidAgentName, parseRole, sha256, verifyWalletSignature } from './security'
+import { buildChallengeMessage, buildLoginChallengeMessage, decodePublicKey, isValidAgentName, parseRole, sha256, verifyWalletSignature } from './security'
 import { parseOfferKind, validateOfferTerms } from './negotiation'
 import { buildVideoSubmissionMessage, canonicalYoutubeUrl, getYoutubeVideoId } from './youtube'
 import { fetchDevnetTransaction, SOLANA_DEVNET_USDC_MINT, verifyDevnetUsdcDelegation, verifyDevnetUsdcPayment, verifyDevnetUsdcRevocation, VIDEO_PAYMENT_AMOUNT_BASE_UNITS, VIDEO_PAYMENT_AMOUNT_USDC } from './solana'
@@ -15,14 +15,7 @@ type AgentRow = { id: string; name: string; role: 'brand' | 'creator'; wallet: s
 type CampaignRow = { id: string; title: string; brand_agent_id: string; creator_agent_id: string | null; status: 'negotiating' | 'accepted' | 'cancelled'; accepted_offer_id: string | null; created_at: string; updated_at: string }
 type VideoSubmissionRow = { id: string; campaign_id: string; campaign_title: string; creator_agent_id: string; creator_name: string; video_id: string; youtube_url: string; title: string; channel_title: string; thumbnail_url: string | null; verification_status: 'public_verified' | 'channel_verified'; creator_signed: number; created_at: string; verified_at: string }
 type PaymentRow = { id: string; campaign_id: string; campaign_title: string; milestone: 'video_publication'; sender_wallet: string; authority_wallet: string | null; recipient_wallet: string; mint: string; amount_base_units: string; amount_usdc: string; memo: string; status: 'requested' | 'confirmed'; transaction_signature: string | null; created_at: string; confirmed_at: string | null }
-type DelegationRow = { id: string; brand_agent_id: string; campaign_id: string | null; owner_wallet: string; delegate_wallet: string; token_account: string; mint: string; allowance_base_units: string; approval_signature: string; status: 'active' | 'revoked'; created_at: string; revoked_at: string | null; revocation_signature: string | null }
-type CreatorOfferV2Row = {
-  id: string; campaign_id: string; campaign_title?: string; brand_agent_id: string; creator_name: string; youtube_channel: string; creator_wallet: string | null;
-  fit_score: number; amount_base_units: string; amount_usdc: string; ai_rationale: string; status: 'proposed' | 'accepted' | 'submitted' | 'verified' | 'paid' | 'rejected' | 'expired';
-  video_id: string | null; youtube_url: string | null; video_title: string | null; verified_channel_title: string | null; thumbnail_url: string | null;
-  creator_signature: string | null; expires_at: string; accepted_at: string | null; submitted_at: string | null; verified_at: string | null; paid_at: string | null; created_at: string; updated_at: string
-}
-type CreatorPaymentV2Row = { id: string; offer_id: string; campaign_id: string; brand_agent_id: string; sender_wallet: string; authority_wallet: string; recipient_wallet: string; mint: string; amount_base_units: string; amount_usdc: string; memo: string; status: 'prepared' | 'confirmed'; transaction_signature: string | null; created_at: string; confirmed_at: string | null }
+type DelegationRow = { id: string; brand_agent_id: string; owner_wallet: string; delegate_wallet: string; token_account: string; mint: string; allowance_base_units: string; approval_signature: string; status: 'active' | 'revoked'; created_at: string; revoked_at: string | null; revocation_signature: string | null }
 type PipelineRow = {
   creator_id: string; creator_name: string; creator_wallet: string; campaign_id: string | null; campaign_title: string | null;
   campaign_status: string | null; offered_amount: string | null; video_id: string | null; youtube_url: string | null;
@@ -332,144 +325,6 @@ async function verifyPublicYoutubeVideo(videoId: string) {
   }
 }
 
-function creatorOfferV2Json(row: CreatorOfferV2Row) {
-  return {
-    offerId: row.id,
-    campaignId: row.campaign_id,
-    campaignTitle: row.campaign_title,
-    creatorName: row.creator_name,
-    youtubeChannel: row.youtube_channel,
-    creatorWallet: row.creator_wallet,
-    fitScore: row.fit_score,
-    amountBaseUnits: row.amount_base_units,
-    amountUsdc: row.amount_usdc,
-    aiRationale: row.ai_rationale,
-    status: row.status,
-    video: row.video_id ? { videoId: row.video_id, youtubeUrl: row.youtube_url, title: row.video_title, channelTitle: row.verified_channel_title, thumbnailUrl: row.thumbnail_url } : null,
-    expiresAt: row.expires_at,
-    acceptedAt: row.accepted_at,
-    submittedAt: row.submitted_at,
-    verifiedAt: row.verified_at,
-    paidAt: row.paid_at,
-    updatedAt: row.updated_at,
-  }
-}
-
-async function findCreatorOfferV2ByToken(env: Env, token: string) {
-  if (!/^[a-f0-9]{64}$/.test(token)) return null
-  return env.DB.prepare(`SELECT o.*, c.title AS campaign_title FROM creatorflow2_offers o JOIN campaigns c ON c.id = o.campaign_id WHERE o.access_token_hash = ?`)
-    .bind(await sha256(token)).first<CreatorOfferV2Row>()
-}
-
-async function createCreatorOfferV2(request: Request, env: Env) {
-  const agent = await authenticateAgent(request, env)
-  if (agent instanceof Response) return agent
-  if (agent.role !== 'brand') return error(request, env, 'ROLE_FORBIDDEN', '브랜드 AI만 크리에이터에게 제안할 수 있습니다.', 403)
-  const body = await readBody(request)
-  const campaignId = typeof body?.campaignId === 'string' ? body.campaignId : ''
-  const creatorName = typeof body?.creatorName === 'string' ? body.creatorName.trim() : ''
-  const youtubeChannel = typeof body?.youtubeChannel === 'string' ? body.youtubeChannel.trim() : ''
-  const creatorWallet = typeof body?.creatorWallet === 'string' && body.creatorWallet.trim() ? body.creatorWallet.trim() : null
-  const fitScore = Number.isInteger(body?.fitScore) ? Number(body?.fitScore) : -1
-  const aiRationale = typeof body?.aiRationale === 'string' ? body.aiRationale.trim().slice(0, 240) : ''
-  if (!/^[^<>]{2,60}$/u.test(creatorName) || !/^[^<>]{2,120}$/u.test(youtubeChannel) || (creatorWallet && !decodePublicKey(creatorWallet))) return error(request, env, 'INVALID_CREATOR', '크리에이터 이름, 채널 또는 지갑이 올바르지 않습니다.', 400)
-  const payout = recommendCreatorPayout(fitScore)
-  if (!payout) return error(request, env, 'INVALID_FIT_SCORE', 'AI 적합도는 0~100 정수여야 합니다.', 400)
-  const campaign = await env.DB.prepare('SELECT id, title, brand_agent_id FROM campaigns WHERE id = ?').bind(campaignId).first<{ id: string; title: string; brand_agent_id: string }>()
-  if (!campaign) return error(request, env, 'CAMPAIGN_NOT_FOUND', '캠페인을 찾을 수 없습니다.', 404)
-  if (campaign.brand_agent_id !== agent.id) return error(request, env, 'ROLE_FORBIDDEN', '이 캠페인의 브랜드 AI가 아닙니다.', 403)
-  const offerId = `cfo_${crypto.randomUUID().replaceAll('-', '').slice(0, 20)}`
-  const inviteToken = `${crypto.randomUUID()}${crypto.randomUUID()}`.replaceAll('-', '')
-  const createdAt = new Date().toISOString()
-  const expiresAt = new Date(Date.now() + 14 * 24 * 60 * 60_000).toISOString()
-  const rationale = aiRationale || `YouTube 채널 적합도 ${fitScore}점 · 시스템 지급 구간 ${payout.tier}`
-  await env.DB.batch([
-    env.DB.prepare(`INSERT INTO creatorflow2_offers (id, campaign_id, brand_agent_id, creator_name, youtube_channel, creator_wallet, fit_score, amount_base_units, amount_usdc, ai_rationale, access_token_hash, status, expires_at, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'proposed', ?, ?, ?)`)
-      .bind(offerId, campaign.id, agent.id, creatorName, youtubeChannel, creatorWallet, payout.fitScore, payout.amountBaseUnits, payout.amountUsdc, rationale, await sha256(inviteToken), expiresAt, createdAt, createdAt),
-    audit(env, { agentId: agent.id, campaignId: campaign.id, eventType: 'creatorflow2.offer_proposed', payload: { offerId, creatorName, youtubeChannel, fitScore, amountUsdc: payout.amountUsdc, rationale }, createdAt }),
-  ])
-  return json(request, env, { offer: creatorOfferV2Json({ id: offerId, campaign_id: campaign.id, campaign_title: campaign.title, brand_agent_id: agent.id, creator_name: creatorName, youtube_channel: youtubeChannel, creator_wallet: creatorWallet, fit_score: payout.fitScore, amount_base_units: payout.amountBaseUnits, amount_usdc: payout.amountUsdc, ai_rationale: rationale, status: 'proposed', video_id: null, youtube_url: null, video_title: null, verified_channel_title: null, thumbnail_url: null, creator_signature: null, expires_at: expiresAt, accepted_at: null, submitted_at: null, verified_at: null, paid_at: null, created_at: createdAt, updated_at: createdAt }), inviteToken }, 201)
-}
-
-async function getCreatorInviteV2(request: Request, env: Env, token: string) {
-  const offer = await findCreatorOfferV2ByToken(env, token)
-  if (!offer) return error(request, env, 'INVITE_NOT_FOUND', '제안 링크가 올바르지 않습니다.', 404)
-  if (offer.status === 'proposed' && offer.expires_at <= new Date().toISOString()) {
-    await env.DB.prepare("UPDATE creatorflow2_offers SET status = 'expired', updated_at = ? WHERE id = ? AND status = 'proposed'").bind(new Date().toISOString(), offer.id).run()
-    offer.status = 'expired'
-  }
-  return json(request, env, { offer: creatorOfferV2Json(offer) })
-}
-
-async function createCreatorInviteChallengeV2(request: Request, env: Env, token: string) {
-  const offer = await findCreatorOfferV2ByToken(env, token)
-  if (!offer) return error(request, env, 'INVITE_NOT_FOUND', '제안 링크가 올바르지 않습니다.', 404)
-  const body = await readBody(request)
-  const action = body?.action === 'accept' || body?.action === 'submit' ? body.action : null
-  const wallet = typeof body?.wallet === 'string' ? body.wallet.trim() : ''
-  if (!action || !decodePublicKey(wallet)) return error(request, env, 'INVALID_ACTION', '행동 또는 크리에이터 지갑이 올바르지 않습니다.', 400)
-  if (offer.creator_wallet && offer.creator_wallet !== wallet) return error(request, env, 'WALLET_MISMATCH', '제안에 지정된 크리에이터 지갑과 다릅니다.', 403)
-  if (action === 'accept' && offer.status !== 'proposed') return error(request, env, 'STATE_CONFLICT', '현재 수락할 수 없는 제안입니다.', 409)
-  if (action === 'submit' && offer.status !== 'accepted') return error(request, env, 'STATE_CONFLICT', '제안을 먼저 수락해야 합니다.', 409)
-
-  let verified: Awaited<ReturnType<typeof verifyPublicYoutubeVideo>> = null
-  let videoId: string | null = null
-  if (action === 'submit') {
-    videoId = getYoutubeVideoId(body?.youtubeUrl)
-    if (!videoId) return error(request, env, 'INVALID_YOUTUBE_URL', '올바른 YouTube 영상 주소를 입력해 주세요.', 400)
-    verified = await verifyPublicYoutubeVideo(videoId)
-    if (!verified) return error(request, env, 'YOUTUBE_NOT_PUBLIC', 'YouTube에서 공개 영상을 확인할 수 없습니다.', 422)
-    if (verified.channelTitle.trim().toLocaleLowerCase() !== offer.youtube_channel.trim().toLocaleLowerCase()) return error(request, env, 'YOUTUBE_CHANNEL_MISMATCH', `제안 채널(${offer.youtube_channel})과 영상 채널(${verified.channelTitle})이 다릅니다.`, 422)
-  }
-  const challengeId = crypto.randomUUID()
-  const confirmationCode = challengeId.replaceAll('-', '').slice(0, 8).toUpperCase()
-  const createdAt = new Date().toISOString()
-  const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString()
-  const message = buildCreatorOfferActionMessage({ action, offerId: offer.id, campaignId: offer.campaign_id, wallet, amountUsdc: offer.amount_usdc, videoId: videoId ?? undefined, confirmationCode })
-  await env.DB.prepare(`INSERT INTO creatorflow2_challenges (id, offer_id, action, wallet, message, video_id, youtube_url, video_title, verified_channel_title, thumbnail_url, expires_at, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(challengeId, offer.id, action, wallet, message, videoId, verified?.youtubeUrl ?? null, verified?.title ?? null, verified?.channelTitle ?? null, verified?.thumbnailUrl ?? null, expiresAt, createdAt).run()
-  return json(request, env, { challengeId, action, message, expiresAt, video: verified && videoId ? { videoId, ...verified } : null }, 201)
-}
-
-async function completeCreatorInviteActionV2(request: Request, env: Env, token: string) {
-  const offer = await findCreatorOfferV2ByToken(env, token)
-  if (!offer) return error(request, env, 'INVITE_NOT_FOUND', '제안 링크가 올바르지 않습니다.', 404)
-  const body = await readBody(request)
-  const challengeId = typeof body?.challengeId === 'string' ? body.challengeId : ''
-  const signature = typeof body?.signature === 'string' ? body.signature.trim() : ''
-  const challenge = await env.DB.prepare('SELECT * FROM creatorflow2_challenges WHERE id = ? AND offer_id = ?').bind(challengeId, offer.id).first<{
-    id: string; offer_id: string; action: 'accept' | 'submit'; wallet: string; message: string; video_id: string | null; youtube_url: string | null; video_title: string | null; verified_channel_title: string | null; thumbnail_url: string | null; expires_at: string; used_at: string | null
-  }>()
-  if (!challenge || !signature) return error(request, env, 'CHALLENGE_NOT_FOUND', '서명 요청을 찾을 수 없습니다.', 404)
-  if (challenge.used_at || challenge.expires_at <= new Date().toISOString()) return error(request, env, 'CHALLENGE_EXPIRED', '서명 요청이 만료됐거나 이미 사용됐습니다.', 409)
-  if (!verifyWalletSignature({ message: challenge.message, signature, wallet: challenge.wallet })) return error(request, env, 'INVALID_SIGNATURE', '크리에이터 지갑 서명을 확인할 수 없습니다.', 401)
-  const completedAt = new Date().toISOString()
-  if (challenge.action === 'accept') {
-    if (offer.status !== 'proposed') return error(request, env, 'STATE_CONFLICT', '이미 처리된 제안입니다.', 409)
-    await env.DB.batch([
-      env.DB.prepare("UPDATE creatorflow2_offers SET status = 'accepted', creator_wallet = ?, accepted_at = ?, updated_at = ? WHERE id = ? AND status = 'proposed'").bind(challenge.wallet, completedAt, completedAt, offer.id),
-      env.DB.prepare('UPDATE creatorflow2_challenges SET used_at = ? WHERE id = ? AND used_at IS NULL').bind(completedAt, challenge.id),
-      audit(env, { campaignId: offer.campaign_id, eventType: 'creatorflow2.offer_accepted', payload: { offerId: offer.id, creatorWallet: challenge.wallet }, createdAt: completedAt }),
-    ])
-    return json(request, env, { offer: creatorOfferV2Json({ ...offer, status: 'accepted', creator_wallet: challenge.wallet, accepted_at: completedAt, updated_at: completedAt }) })
-  }
-  if (offer.status !== 'accepted' || !challenge.video_id || !challenge.youtube_url || !challenge.video_title || !challenge.verified_channel_title) return error(request, env, 'STATE_CONFLICT', '현재 영상을 제출할 수 없습니다.', 409)
-  const [legacyDuplicate, v2Duplicate] = await Promise.all([
-    env.DB.prepare('SELECT id FROM video_submissions WHERE video_id = ?').bind(challenge.video_id).first(),
-    env.DB.prepare('SELECT id FROM creatorflow2_offers WHERE video_id = ? AND id != ?').bind(challenge.video_id, offer.id).first(),
-  ])
-  if (legacyDuplicate || v2Duplicate) return error(request, env, 'VIDEO_ALREADY_USED', '이 YouTube 영상은 이미 다른 제안에 제출됐습니다.', 409)
-  await env.DB.batch([
-    env.DB.prepare(`UPDATE creatorflow2_offers SET status = 'verified', video_id = ?, youtube_url = ?, video_title = ?, verified_channel_title = ?, thumbnail_url = ?, creator_signature = ?, submitted_at = ?, verified_at = ?, updated_at = ? WHERE id = ? AND status = 'accepted'`)
-      .bind(challenge.video_id, challenge.youtube_url, challenge.video_title, challenge.verified_channel_title, challenge.thumbnail_url, signature, completedAt, completedAt, completedAt, offer.id),
-    env.DB.prepare('UPDATE creatorflow2_challenges SET used_at = ? WHERE id = ? AND used_at IS NULL').bind(completedAt, challenge.id),
-    audit(env, { campaignId: offer.campaign_id, eventType: 'creatorflow2.video_verified', payload: { offerId: offer.id, videoId: challenge.video_id, channelTitle: challenge.verified_channel_title, creatorWallet: challenge.wallet }, createdAt: completedAt }),
-  ])
-  return json(request, env, { offer: creatorOfferV2Json({ ...offer, status: 'verified', video_id: challenge.video_id, youtube_url: challenge.youtube_url, video_title: challenge.video_title, verified_channel_title: challenge.verified_channel_title, thumbnail_url: challenge.thumbnail_url, creator_signature: signature, submitted_at: completedAt, verified_at: completedAt, updated_at: completedAt }) })
-}
-
 async function listVideoSubmissions(request: Request, env: Env) {
   const rows = await env.DB.prepare(`SELECT v.id, v.campaign_id, c.title AS campaign_title, v.creator_agent_id, a.name AS creator_name,
     v.video_id, v.youtube_url, v.title, v.channel_title, v.thumbnail_url, v.verification_status, v.creator_signature IS NOT NULL AS creator_signed, v.created_at, v.verified_at
@@ -639,7 +494,7 @@ async function listPayments(request: Request, env: Env) {
 
 function delegationJson(row: DelegationRow) {
   return {
-    delegationId: row.id, brandAgentId: row.brand_agent_id, campaignId: row.campaign_id, ownerWallet: row.owner_wallet, delegateWallet: row.delegate_wallet,
+    delegationId: row.id, brandAgentId: row.brand_agent_id, ownerWallet: row.owner_wallet, delegateWallet: row.delegate_wallet,
     tokenAccount: row.token_account, mint: row.mint, allowanceBaseUnits: row.allowance_base_units,
     allowanceUsdc: (Number(row.allowance_base_units) / 1_000_000).toFixed(2), status: row.status,
     approvalSignature: row.approval_signature, createdAt: row.created_at, revokedAt: row.revoked_at, revocationSignature: row.revocation_signature,
@@ -650,10 +505,7 @@ async function getDelegation(request: Request, env: Env) {
   const agent = await authenticateAgent(request, env)
   if (agent instanceof Response) return agent
   if (agent.role !== 'brand') return error(request, env, 'ROLE_FORBIDDEN', '브랜드 AI만 위임 상태를 확인할 수 있습니다.', 403)
-  const campaignId = new URL(request.url).searchParams.get('campaignId')
-  const row = campaignId
-    ? await env.DB.prepare('SELECT * FROM brand_wallet_delegations WHERE brand_agent_id = ? AND campaign_id = ? ORDER BY created_at DESC LIMIT 1').bind(agent.id, campaignId).first<DelegationRow>()
-    : await env.DB.prepare('SELECT * FROM brand_wallet_delegations WHERE brand_agent_id = ? ORDER BY created_at DESC LIMIT 1').bind(agent.id).first<DelegationRow>()
+  const row = await env.DB.prepare('SELECT * FROM brand_wallet_delegations WHERE brand_agent_id = ? ORDER BY created_at DESC LIMIT 1').bind(agent.id).first<DelegationRow>()
   return json(request, env, { delegation: row ? delegationJson(row) : null })
 }
 
@@ -663,62 +515,43 @@ async function confirmDelegation(request: Request, env: Env) {
   if (agent.role !== 'brand') return error(request, env, 'ROLE_FORBIDDEN', '브랜드 AI만 지갑 위임을 연결할 수 있습니다.', 403)
   const body = await readBody(request)
   const ownerWallet = typeof body?.ownerWallet === 'string' ? body.ownerWallet.trim() : ''
-  const campaignId = typeof body?.campaignId === 'string' ? body.campaignId : ''
   const transactionSignature = typeof body?.transactionSignature === 'string' ? body.transactionSignature.trim() : ''
   const allowanceBaseUnits = typeof body?.allowanceBaseUnits === 'string' ? body.allowanceBaseUnits : '100000'
   if (!decodePublicKey(ownerWallet) || !/^\d+$/.test(allowanceBaseUnits) || BigInt(allowanceBaseUnits) < 1n || BigInt(allowanceBaseUnits) > 300000n) return error(request, env, 'INVALID_DELEGATION', '소유자 지갑 또는 위임 한도가 올바르지 않습니다.', 400)
-  const campaign = await env.DB.prepare('SELECT c.id, c.brand_agent_id, a.wallet AS current_brand_wallet FROM campaigns c JOIN agents a ON a.id = c.brand_agent_id WHERE c.id = ?').bind(campaignId).first<{ id: string; brand_agent_id: string; current_brand_wallet: string }>()
-  if (!campaign) return error(request, env, 'CAMPAIGN_NOT_FOUND', '캠페인을 찾을 수 없습니다.', 404)
-  const previous = await env.DB.prepare("SELECT * FROM brand_wallet_delegations WHERE campaign_id = ? ORDER BY created_at DESC LIMIT 1").bind(campaignId).first<DelegationRow>()
-  const canTakeOver = campaign.brand_agent_id === agent.id || campaign.current_brand_wallet === ownerWallet || (previous?.status === 'revoked' && previous.owner_wallet === ownerWallet)
-  if (!canTakeOver) return error(request, env, 'CAMPAIGN_OWNERSHIP_REQUIRED', '브랜드 사람 지갑의 기존 소유권 또는 revoke 기록을 확인할 수 없습니다.', 403)
   const active = await env.DB.prepare("SELECT id FROM brand_wallet_delegations WHERE brand_agent_id = ? AND status = 'active'").bind(agent.id).first()
-  if (active) return error(request, env, 'ACTIVE_DELEGATION_EXISTS', '기존 캠페인의 AI 지갑 위임을 먼저 해제해 주세요.', 409)
+  if (active) return error(request, env, 'ACTIVE_DELEGATION_EXISTS', '기존 AI 지갑 위임을 먼저 해제해 주세요.', 409)
   const transaction = await fetchDevnetTransaction(transactionSignature, env.SOLANA_RPC_URL)
   const verified = verifyDevnetUsdcDelegation(transaction, { ownerWallet, delegateWallet: agent.wallet, mint: SOLANA_DEVNET_USDC_MINT, allowanceBaseUnits })
   if (!verified) return error(request, env, 'DELEGATION_VERIFICATION_FAILED', 'Devnet USDC 위임 거래를 확인할 수 없습니다.', 422)
   const createdAt = new Date().toISOString()
   const id = `dlg_${crypto.randomUUID().replaceAll('-', '').slice(0, 20)}`
   await env.DB.batch([
-    env.DB.prepare(`INSERT INTO brand_wallet_delegations (id, brand_agent_id, campaign_id, owner_wallet, delegate_wallet, token_account, mint, allowance_base_units, approval_signature, status, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)`).bind(id, agent.id, campaignId, ownerWallet, agent.wallet, verified.tokenAccount, SOLANA_DEVNET_USDC_MINT, allowanceBaseUnits, transactionSignature, createdAt),
-    audit(env, { agentId: agent.id, campaignId, eventType: 'wallet.delegation_confirmed', payload: { delegationId: id, ownerWallet, delegateWallet: agent.wallet, allowanceBaseUnits, transactionSignature }, createdAt }),
-    ...(campaign.brand_agent_id !== agent.id ? [env.DB.prepare('UPDATE campaigns SET brand_agent_id = ?, updated_at = ? WHERE id = ?').bind(agent.id, createdAt, campaignId)] : []),
+    env.DB.prepare(`INSERT INTO brand_wallet_delegations (id, brand_agent_id, owner_wallet, delegate_wallet, token_account, mint, allowance_base_units, approval_signature, status, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)`).bind(id, agent.id, ownerWallet, agent.wallet, verified.tokenAccount, SOLANA_DEVNET_USDC_MINT, allowanceBaseUnits, transactionSignature, createdAt),
+    audit(env, { agentId: agent.id, eventType: 'wallet.delegation_confirmed', payload: { delegationId: id, ownerWallet, delegateWallet: agent.wallet, allowanceBaseUnits, transactionSignature }, createdAt }),
   ])
-  return json(request, env, { delegation: delegationJson({ id, brand_agent_id: agent.id, campaign_id: campaignId, owner_wallet: ownerWallet, delegate_wallet: agent.wallet, token_account: verified.tokenAccount, mint: SOLANA_DEVNET_USDC_MINT, allowance_base_units: allowanceBaseUnits, approval_signature: transactionSignature, status: 'active', created_at: createdAt, revoked_at: null, revocation_signature: null }) }, 201)
+  return json(request, env, { delegation: delegationJson({ id, brand_agent_id: agent.id, owner_wallet: ownerWallet, delegate_wallet: agent.wallet, token_account: verified.tokenAccount, mint: SOLANA_DEVNET_USDC_MINT, allowance_base_units: allowanceBaseUnits, approval_signature: transactionSignature, status: 'active', created_at: createdAt, revoked_at: null, revocation_signature: null }) }, 201)
 }
 
 async function confirmDelegationRevocation(request: Request, env: Env) {
+  const agent = await authenticateAgent(request, env)
+  if (agent instanceof Response) return agent
+  if (agent.role !== 'brand') return error(request, env, 'ROLE_FORBIDDEN', '브랜드 AI만 위임 해제를 확인할 수 있습니다.', 403)
   const body = await readBody(request)
   const transactionSignature = typeof body?.transactionSignature === 'string' ? body.transactionSignature.trim() : ''
-  const delegationId = typeof body?.delegationId === 'string' ? body.delegationId : ''
-  const row = await env.DB.prepare("SELECT * FROM brand_wallet_delegations WHERE id = ? AND status = 'active'").bind(delegationId).first<DelegationRow>()
+  const row = await env.DB.prepare("SELECT * FROM brand_wallet_delegations WHERE brand_agent_id = ? AND status = 'active'").bind(agent.id).first<DelegationRow>()
   if (!row) return error(request, env, 'DELEGATION_NOT_FOUND', '활성 위임이 없습니다.', 404)
   const transaction = await fetchDevnetTransaction(transactionSignature, env.SOLANA_RPC_URL)
   if (!verifyDevnetUsdcRevocation(transaction, { ownerWallet: row.owner_wallet, tokenAccount: row.token_account })) return error(request, env, 'REVOCATION_VERIFICATION_FAILED', 'Devnet 위임 해제 거래를 확인할 수 없습니다.', 422)
   const revokedAt = new Date().toISOString()
   await env.DB.batch([
     env.DB.prepare("UPDATE brand_wallet_delegations SET status = 'revoked', revoked_at = ?, revocation_signature = ? WHERE id = ? AND status = 'active'").bind(revokedAt, transactionSignature, row.id),
-    audit(env, { agentId: row.brand_agent_id, campaignId: row.campaign_id, eventType: 'wallet.delegation_revoked', payload: { delegationId: row.id, transactionSignature, recoveryReady: true }, createdAt: revokedAt }),
+    audit(env, { agentId: agent.id, eventType: 'wallet.delegation_revoked', payload: { delegationId: row.id, transactionSignature }, createdAt: revokedAt }),
   ])
   return json(request, env, { delegation: delegationJson({ ...row, status: 'revoked', revoked_at: revokedAt, revocation_signature: transactionSignature }) })
 }
 
-async function findDelegationRecovery(request: Request, env: Env) {
-  const body = await readBody(request)
-  const ownerWallet = typeof body?.ownerWallet === 'string' ? body.ownerWallet.trim() : ''
-  const campaignId = typeof body?.campaignId === 'string' ? body.campaignId : ''
-  if (!decodePublicKey(ownerWallet) || !campaignId) return error(request, env, 'INVALID_RECOVERY', '브랜드 사람 지갑과 캠페인이 필요합니다.', 400)
-  const row = await env.DB.prepare("SELECT * FROM brand_wallet_delegations WHERE owner_wallet = ? AND campaign_id = ? AND status = 'active'").bind(ownerWallet, campaignId).first<DelegationRow>()
-  if (!row) return error(request, env, 'DELEGATION_NOT_FOUND', '이 캠페인의 활성 AI 권한이 없습니다.', 404)
-  return json(request, env, { delegation: delegationJson(row) })
-}
-
 async function listCreatorFlow2Pipeline(request: Request, env: Env) {
-  const v2Rows = await env.DB.prepare(`SELECT o.*, c.title AS campaign_title, p.transaction_signature
-    FROM creatorflow2_offers o JOIN campaigns c ON c.id = o.campaign_id
-    LEFT JOIN creatorflow2_payments p ON p.offer_id = o.id
-    WHERE o.status NOT IN ('rejected', 'expired') ORDER BY o.updated_at DESC`).all<CreatorOfferV2Row & { transaction_signature: string | null }>()
   const rows = await env.DB.prepare(`SELECT a.id AS creator_id, a.name AS creator_name, a.wallet AS creator_wallet,
     c.id AS campaign_id, c.title AS campaign_title, c.status AS campaign_status,
     o.balance_usdc AS offered_amount, v.video_id, v.youtube_url, v.channel_title, v.title AS video_title,
@@ -732,25 +565,7 @@ async function listCreatorFlow2Pipeline(request: Request, env: Env) {
     LEFT JOIN payment_requests p ON p.campaign_id = c.id AND p.milestone = 'video_publication'
     WHERE a.role = 'creator' ORDER BY updated_at DESC`).all<PipelineRow>()
 
-  const v2Creators = v2Rows.results.map((row) => {
-    const stage = row.status === 'paid' ? 'paid' : row.status === 'verified' ? 'verified' : row.status === 'submitted' ? 'submitted' : row.status === 'accepted' ? 'accepted' : 'proposed'
-    return {
-      creatorId: row.id,
-      creatorName: row.creator_name,
-      creatorWallet: row.creator_wallet ?? '',
-      youtubeChannel: row.verified_channel_title ?? row.youtube_channel,
-      campaignId: row.campaign_id,
-      campaignTitle: row.campaign_title,
-      offeredAmountUsdc: row.amount_usdc,
-      fitScore: row.fit_score,
-      stage,
-      nextAction: stage === 'proposed' ? '수락 대기' : stage === 'accepted' ? '영상 제출 대기' : stage === 'submitted' ? '시스템 검증 중' : stage === 'verified' ? 'AI 지급 서명 대기' : '지급 완료',
-      video: row.video_id ? { videoId: row.video_id, youtubeUrl: row.youtube_url, title: row.video_title, verificationStatus: row.verified_at ? 'public_verified' : 'submitted', creatorSigned: Boolean(row.creator_signature) } : null,
-      transactionSignature: row.transaction_signature,
-      updatedAt: row.updated_at,
-    }
-  })
-  const legacyCreators = rows.results.map((row, index) => {
+  const creators = rows.results.map((row, index) => {
     const fitScore = row.video_id ? 86 : Math.max(55, 76 - index * 7)
     const recommendation = recommendCreatorPayout(fitScore)!
     const stage = row.payment_status === 'confirmed' ? 'paid'
@@ -775,111 +590,9 @@ async function listCreatorFlow2Pipeline(request: Request, env: Env) {
     }
   })
   return json(request, env, {
-    campaign: { id: v2Rows.results[0]?.campaign_id ?? rows.results[0]?.campaign_id ?? null, title: v2Rows.results[0]?.campaign_title ?? rows.results[0]?.campaign_title ?? 'CreatorFlow 소개 영상', network: 'Solana Devnet', campaignCapUsdc: '0.30', dailyAiCapUsdc: '0.10' },
-    creators: [...v2Creators, ...legacyCreators],
+    campaign: { title: rows.results[0]?.campaign_title ?? 'CreatorFlow 소개 영상', network: 'Solana Devnet', campaignCapUsdc: '0.30', dailyAiCapUsdc: '0.10' },
+    creators,
   })
-}
-
-function creatorPaymentV2Json(row: CreatorPaymentV2Row) {
-  return {
-    paymentId: row.id, offerId: row.offer_id, campaignId: row.campaign_id,
-    senderWallet: row.sender_wallet, authorityWallet: row.authority_wallet, recipientWallet: row.recipient_wallet,
-    mint: row.mint, amountBaseUnits: row.amount_base_units, amountUsdc: row.amount_usdc, memo: row.memo,
-    status: row.status, transactionSignature: row.transaction_signature, createdAt: row.created_at, confirmedAt: row.confirmed_at,
-  }
-}
-
-async function prepareCreatorPaymentV2(request: Request, env: Env, offerId: string) {
-  const agent = await authenticateAgent(request, env)
-  if (agent instanceof Response) return agent
-  if (agent.role !== 'brand') return error(request, env, 'ROLE_FORBIDDEN', '브랜드 AI만 지급을 준비할 수 있습니다.', 403)
-  const offer = await env.DB.prepare(`SELECT o.*, c.title AS campaign_title FROM creatorflow2_offers o JOIN campaigns c ON c.id = o.campaign_id WHERE o.id = ?`).bind(offerId).first<CreatorOfferV2Row>()
-  if (!offer) return error(request, env, 'OFFER_NOT_FOUND', '크리에이터 제안을 찾을 수 없습니다.', 404)
-  if (offer.brand_agent_id !== agent.id) return error(request, env, 'ROLE_FORBIDDEN', '이 제안의 브랜드 AI가 아닙니다.', 403)
-  if (offer.status !== 'verified' || !offer.creator_wallet || !offer.creator_signature) return error(request, env, 'PAYMENT_NOT_READY', '크리에이터의 수락·영상 제출·검증이 모두 필요합니다.', 409)
-  const existing = await env.DB.prepare('SELECT * FROM creatorflow2_payments WHERE offer_id = ?').bind(offer.id).first<CreatorPaymentV2Row>()
-  if (existing) return json(request, env, { payment: creatorPaymentV2Json(existing) })
-  const delegation = await env.DB.prepare("SELECT * FROM brand_wallet_delegations WHERE brand_agent_id = ? AND campaign_id = ? AND status = 'active'").bind(agent.id, offer.campaign_id).first<DelegationRow>()
-  if (!delegation) return error(request, env, 'DELEGATION_REQUIRED', '이 캠페인의 AI 지갑 지급 한도를 먼저 연결해 주세요.', 409)
-  if (BigInt(delegation.allowance_base_units) < BigInt(offer.amount_base_units)) return error(request, env, 'DELEGATION_TOO_SMALL', '남은 제안 금액보다 위임 한도가 작습니다.', 409)
-
-  const today = `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`
-  const [campaignV2, campaignLegacy, dailyV2, dailyLegacy] = await Promise.all([
-    env.DB.prepare("SELECT amount_base_units FROM creatorflow2_payments WHERE campaign_id = ? AND status IN ('prepared', 'confirmed')").bind(offer.campaign_id).all<{ amount_base_units: string }>(),
-    env.DB.prepare("SELECT amount_base_units FROM payment_requests WHERE campaign_id = ? AND status IN ('requested', 'confirmed')").bind(offer.campaign_id).all<{ amount_base_units: string }>(),
-    env.DB.prepare("SELECT amount_base_units FROM creatorflow2_payments WHERE authority_wallet = ? AND created_at >= ? AND status IN ('prepared', 'confirmed')").bind(agent.wallet, today).all<{ amount_base_units: string }>(),
-    env.DB.prepare("SELECT amount_base_units FROM payment_requests WHERE authority_wallet = ? AND created_at >= ? AND status IN ('requested', 'confirmed')").bind(agent.wallet, today).all<{ amount_base_units: string }>(),
-  ])
-  const sum = (values: Array<{ amount_base_units: string }>) => values.reduce((total, item) => total + BigInt(item.amount_base_units), 0n)
-  const campaignSpent = sum([...campaignV2.results, ...campaignLegacy.results]).toString()
-  const dailySpent = sum([...dailyV2.results, ...dailyLegacy.results]).toString()
-  if (!isPayoutWithinLimits({ amountBaseUnits: offer.amount_base_units, campaignSpentBaseUnits: campaignSpent, dailySpentBaseUnits: dailySpent })) return error(request, env, 'PAYMENT_LIMIT_EXCEEDED', '캠페인 또는 AI 일일 지급 한도를 초과합니다.', 409)
-
-  const paymentId = `cfp_${crypto.randomUUID().replaceAll('-', '').slice(0, 20)}`
-  const memo = `CreatorFlow2:${paymentId}`
-  const createdAt = new Date().toISOString()
-  const row: CreatorPaymentV2Row = { id: paymentId, offer_id: offer.id, campaign_id: offer.campaign_id, brand_agent_id: agent.id, sender_wallet: delegation.owner_wallet, authority_wallet: agent.wallet, recipient_wallet: offer.creator_wallet, mint: SOLANA_DEVNET_USDC_MINT, amount_base_units: offer.amount_base_units, amount_usdc: offer.amount_usdc, memo, status: 'prepared', transaction_signature: null, created_at: createdAt, confirmed_at: null }
-  await env.DB.batch([
-    env.DB.prepare(`INSERT INTO creatorflow2_payments (id, offer_id, campaign_id, brand_agent_id, sender_wallet, authority_wallet, recipient_wallet, mint, amount_base_units, amount_usdc, memo, status, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', ?)`)
-      .bind(row.id, row.offer_id, row.campaign_id, row.brand_agent_id, row.sender_wallet, row.authority_wallet, row.recipient_wallet, row.mint, row.amount_base_units, row.amount_usdc, row.memo, row.created_at),
-    audit(env, { agentId: agent.id, campaignId: offer.campaign_id, eventType: 'creatorflow2.payment_prepared', payload: { paymentId, offerId: offer.id, recipientWallet: offer.creator_wallet, amountUsdc: offer.amount_usdc, authorityWallet: agent.wallet }, createdAt }),
-  ])
-  return json(request, env, { payment: creatorPaymentV2Json(row) }, 201)
-}
-
-async function confirmCreatorPaymentV2(request: Request, env: Env, paymentId: string, suppliedSignature?: string) {
-  const agent = await authenticateAgent(request, env)
-  if (agent instanceof Response) return agent
-  if (agent.role !== 'brand') return error(request, env, 'ROLE_FORBIDDEN', '브랜드 AI만 지급을 확인할 수 있습니다.', 403)
-  const body = suppliedSignature ? null : await readBody(request)
-  const transactionSignature = suppliedSignature ?? (typeof body?.transactionSignature === 'string' ? body.transactionSignature.trim() : '')
-  const payment = await env.DB.prepare('SELECT * FROM creatorflow2_payments WHERE id = ?').bind(paymentId).first<CreatorPaymentV2Row>()
-  if (!payment) return error(request, env, 'PAYMENT_NOT_FOUND', '지급 준비 기록을 찾을 수 없습니다.', 404)
-  if (payment.brand_agent_id !== agent.id || payment.authority_wallet !== agent.wallet) return error(request, env, 'ROLE_FORBIDDEN', '이 지급을 서명한 브랜드 AI가 아닙니다.', 403)
-  if (payment.status === 'confirmed') {
-    if (payment.transaction_signature !== transactionSignature) return error(request, env, 'PAYMENT_ALREADY_CONFIRMED', '이미 다른 거래로 지급됐습니다.', 409)
-    return json(request, env, { payment: creatorPaymentV2Json(payment) })
-  }
-  const [legacyUse, otherV2Use] = await Promise.all([
-    env.DB.prepare('SELECT id FROM payment_requests WHERE transaction_signature = ?').bind(transactionSignature).first(),
-    env.DB.prepare('SELECT id FROM creatorflow2_payments WHERE transaction_signature = ? AND id != ?').bind(transactionSignature, payment.id).first(),
-  ])
-  if (legacyUse || otherV2Use) return error(request, env, 'TRANSACTION_ALREADY_USED', '이미 다른 지급에 사용된 Solana 거래입니다.', 409)
-  let transaction: unknown = null
-  for (let attempt = 0; attempt < 5 && !transaction; attempt += 1) {
-    transaction = await fetchDevnetTransaction(transactionSignature, env.SOLANA_RPC_URL)
-    if (!transaction) await new Promise((resolve) => setTimeout(resolve, 450))
-  }
-  if (!verifyDevnetUsdcPayment(transaction, { senderWallet: payment.sender_wallet, authorityWallet: payment.authority_wallet, recipientWallet: payment.recipient_wallet, mint: payment.mint, amountBaseUnits: payment.amount_base_units, memo: payment.memo })) return error(request, env, 'PAYMENT_VERIFICATION_FAILED', '수신자·금액·위임 서명·메모가 정확한 Devnet USDC 거래를 확인할 수 없습니다.', 422)
-  const confirmedAt = new Date().toISOString()
-  try {
-    await env.DB.batch([
-      env.DB.prepare("UPDATE creatorflow2_payments SET status = 'confirmed', transaction_signature = ?, confirmed_at = ? WHERE id = ? AND status = 'prepared'").bind(transactionSignature, confirmedAt, payment.id),
-      env.DB.prepare("UPDATE creatorflow2_offers SET status = 'paid', paid_at = ?, updated_at = ? WHERE id = ? AND status = 'verified'").bind(confirmedAt, confirmedAt, payment.offer_id),
-      audit(env, { agentId: agent.id, campaignId: payment.campaign_id, eventType: 'creatorflow2.payment_confirmed', payload: { paymentId: payment.id, offerId: payment.offer_id, amountUsdc: payment.amount_usdc, transactionSignature }, createdAt: confirmedAt }),
-    ])
-  } catch (cause) {
-    if (cause instanceof Error && cause.message.includes('UNIQUE constraint failed')) return error(request, env, 'TRANSACTION_ALREADY_USED', '이미 다른 지급에 사용된 Solana 거래입니다.', 409)
-    throw cause
-  }
-  return json(request, env, { payment: creatorPaymentV2Json({ ...payment, status: 'confirmed', transaction_signature: transactionSignature, confirmed_at: confirmedAt }) })
-}
-
-async function broadcastCreatorPaymentV2(request: Request, env: Env, paymentId: string) {
-  const agent = await authenticateAgent(request, env)
-  if (agent instanceof Response) return agent
-  if (agent.role !== 'brand') return error(request, env, 'ROLE_FORBIDDEN', '브랜드 AI만 서명 거래를 전송할 수 있습니다.', 403)
-  const body = await readBody(request)
-  const signedTransactionBase64 = typeof body?.signedTransactionBase64 === 'string' ? body.signedTransactionBase64.trim() : ''
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(signedTransactionBase64) || signedTransactionBase64.length > 5000) return error(request, env, 'INVALID_SIGNED_TRANSACTION', '서명된 Solana 거래 형식이 올바르지 않습니다.', 400)
-  const payment = await env.DB.prepare('SELECT * FROM creatorflow2_payments WHERE id = ?').bind(paymentId).first<CreatorPaymentV2Row>()
-  if (!payment || payment.brand_agent_id !== agent.id || payment.authority_wallet !== agent.wallet) return error(request, env, 'PAYMENT_NOT_FOUND', '이 브랜드 AI의 지급 준비 기록을 찾을 수 없습니다.', 404)
-  const rpcUrl = env.SOLANA_RPC_URL ?? 'https://api.devnet.solana.com'
-  const response = await fetch(rpcUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'sendTransaction', params: [signedTransactionBase64, { encoding: 'base64', skipPreflight: false, preflightCommitment: 'confirmed' }] }) })
-  const rpc = await response.json() as { result?: unknown; error?: { message?: unknown } }
-  if (!response.ok || typeof rpc.result !== 'string') return error(request, env, 'SOLANA_BROADCAST_FAILED', typeof rpc.error?.message === 'string' ? rpc.error.message : 'Solana Devnet 전송에 실패했습니다.', 422)
-  return confirmCreatorPaymentV2(request, env, paymentId, rpc.result)
 }
 
 async function createPaymentRequest(request: Request, env: Env) {
@@ -900,7 +613,7 @@ async function createPaymentRequest(request: Request, env: Env) {
   if (campaign.brand_agent_id !== agent.id) return error(request, env, 'ROLE_FORBIDDEN', '이 캠페인의 브랜드 에이전트가 아닙니다.', 403)
   if (!campaign.creator_signature) return error(request, env, 'CREATOR_SIGNATURE_REQUIRED', '대구루의 영상 제출 확인 서명이 먼저 필요합니다.', 409)
 
-  const delegation = await env.DB.prepare("SELECT * FROM brand_wallet_delegations WHERE brand_agent_id = ? AND campaign_id = ? AND status = 'active'").bind(agent.id, campaign.id).first<DelegationRow>()
+  const delegation = await env.DB.prepare("SELECT * FROM brand_wallet_delegations WHERE brand_agent_id = ? AND status = 'active'").bind(agent.id).first<DelegationRow>()
   const senderWallet = delegation?.owner_wallet ?? campaign.sender_wallet
   const authorityWallet = delegation?.delegate_wallet ?? campaign.sender_wallet
 
@@ -948,8 +661,6 @@ async function confirmPayment(request: Request, env: Env, paymentId: string) {
     if (payment.transaction_signature !== transactionSignature) return error(request, env, 'PAYMENT_ALREADY_CONFIRMED', '이미 다른 거래로 지급 확인됐습니다.', 409)
     return json(request, env, paymentJson(payment))
   }
-  const v2Use = await env.DB.prepare('SELECT id FROM creatorflow2_payments WHERE transaction_signature = ?').bind(transactionSignature).first()
-  if (v2Use) return error(request, env, 'TRANSACTION_ALREADY_USED', '이미 CreatorFlow2 지급에 사용된 Solana 거래입니다.', 409)
   const transaction = await fetchDevnetTransaction(transactionSignature, env.SOLANA_RPC_URL)
   const valid = verifyDevnetUsdcPayment(transaction, {
     senderWallet: payment.sender_wallet,
@@ -994,22 +705,8 @@ export default {
     if (request.method === 'GET' && url.pathname === '/api/payments') return listPayments(request, env)
     if (request.method === 'GET' && url.pathname === '/api/delegations/current') return getDelegation(request, env)
     if (request.method === 'POST' && url.pathname === '/api/delegations/confirm') return confirmDelegation(request, env)
-    if (request.method === 'POST' && url.pathname === '/api/delegations/recovery') return findDelegationRecovery(request, env)
     if (request.method === 'POST' && url.pathname === '/api/delegations/revoke/confirm') return confirmDelegationRevocation(request, env)
     if (request.method === 'GET' && url.pathname === '/api/creatorflow2/pipeline') return listCreatorFlow2Pipeline(request, env)
-    if (request.method === 'POST' && url.pathname === '/api/creatorflow2/offers') return createCreatorOfferV2(request, env)
-    const creatorInviteMatch = url.pathname.match(/^\/api\/creatorflow2\/invites\/([a-f0-9]{64})$/)
-    if (request.method === 'GET' && creatorInviteMatch) return getCreatorInviteV2(request, env, creatorInviteMatch[1])
-    const creatorInviteChallengeMatch = url.pathname.match(/^\/api\/creatorflow2\/invites\/([a-f0-9]{64})\/challenge$/)
-    if (request.method === 'POST' && creatorInviteChallengeMatch) return createCreatorInviteChallengeV2(request, env, creatorInviteChallengeMatch[1])
-    const creatorInviteCompleteMatch = url.pathname.match(/^\/api\/creatorflow2\/invites\/([a-f0-9]{64})\/complete$/)
-    if (request.method === 'POST' && creatorInviteCompleteMatch) return completeCreatorInviteActionV2(request, env, creatorInviteCompleteMatch[1])
-    const creatorOfferPaymentMatch = url.pathname.match(/^\/api\/creatorflow2\/offers\/([^/]+)\/payment$/)
-    if (request.method === 'POST' && creatorOfferPaymentMatch) return prepareCreatorPaymentV2(request, env, creatorOfferPaymentMatch[1])
-    const creatorPaymentConfirmMatch = url.pathname.match(/^\/api\/creatorflow2\/payments\/([^/]+)\/confirm$/)
-    if (request.method === 'POST' && creatorPaymentConfirmMatch) return confirmCreatorPaymentV2(request, env, creatorPaymentConfirmMatch[1])
-    const creatorPaymentBroadcastMatch = url.pathname.match(/^\/api\/creatorflow2\/payments\/([^/]+)\/broadcast$/)
-    if (request.method === 'POST' && creatorPaymentBroadcastMatch) return broadcastCreatorPaymentV2(request, env, creatorPaymentBroadcastMatch[1])
     if (request.method === 'POST' && url.pathname === '/api/payments/request') return createPaymentRequest(request, env)
     const paymentConfirmMatch = url.pathname.match(/^\/api\/payments\/([^/]+)\/confirm$/)
     if (request.method === 'POST' && paymentConfirmMatch) return confirmPayment(request, env, paymentConfirmMatch[1])

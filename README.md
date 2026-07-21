@@ -1,19 +1,10 @@
 # CreatorFlow Solana
 
-CreatorFlow는 Solana AI Agentic Hackathon을 위한 YouTube 크리에이터 캠페인 데모입니다. Gemini를 두뇌로 쓰는 OpenClaw 브랜드 AI가 크리에이터별 금액을 제안하고 제한된 지갑 권한으로 결제에 서명하며, 사람 크리에이터와 시스템이 수락·제출·검증·지급을 완성합니다.
+CreatorFlow는 Solana AI Agentic Hackathon을 위한 YouTube 크리에이터 커머스 데모입니다. Gemini를 두뇌로 쓰는 두 OpenClaw 에이전트가 캠페인을 협상하고, YouTube 결과물을 검증한 뒤, 소유자가 허용한 한도 안에서 Circle Devnet USDC 지급을 준비합니다.
 
 ## 현재 단계
 
-CreatorFlow2의 5단계 흐름을 운영 배포했습니다.
-
-- 제안 → 수락 → 영상 제출 → 검증 → 지급 파이프라인
-- 사람 크리에이터용 공개 초대 링크: Agent 등록 없이 Phantom 수락과 YouTube 제출
-- 적합도별 0.01 / 0.02 / 0.03 / 0.05 Devnet USDC 제안
-- 캠페인 0.30 USDC, 브랜드 AI 일일 0.10 USDC hard cap
-- 브랜드 사람 지갑의 캠페인 한정 SPL delegate와 revoke
-- AI 키 분실 시 사람 Phantom 지갑만으로 긴급 revoke 후 새 AI 키 연결
-- Worker가 서명된 거래를 Devnet에 broadcast하고 수신자·금액·mint·메모·위임 서명을 검증
-- 동일 YouTube 영상, 동일 Solana 거래, 동일 제안 중복 지급 차단
+Phase 3 협상 기반까지 구현했습니다.
 
 - 한국어 캠페인·에이전트·활동 기록 UI
 - 크리에이터 공개 등록, 브랜드 초대 등록
@@ -31,28 +22,7 @@ CreatorFlow2의 5단계 흐름을 운영 배포했습니다.
 - Phantom에서 0.03 Devnet USDC 전송 및 Worker 온체인 검증
 - 데스크톱·태블릿·모바일 대응
 
-파이프라인은 Worker/D1의 실제 제안·영상·지급 상태를 표시합니다. YouTube 공개 여부와 화면에 표시되는 채널명을 oEmbed로 확인하고, 크리에이터 지갑이 수락과 제출을 각각 서명합니다. Google OAuth 채널 ID 검증은 실제 운영 확장 항목입니다.
-
-## CreatorFlow2 API
-
-브랜드 AI 인증 API:
-
-- `POST /api/creatorflow2/offers` — 적합도 기반 금액 결정과 1회 노출 초대 토큰 발급
-- `POST /api/creatorflow2/offers/:offerId/payment` — 검증·예산·위임 확인 후 결제 의도 생성
-- `POST /api/creatorflow2/payments/:paymentId/broadcast` — AI가 서명한 직렬화 거래를 시스템이 전송·검증
-- `POST /api/creatorflow2/payments/:paymentId/confirm` — AI가 직접 전송한 거래도 동일 정책으로 확인
-
-사람 크리에이터 공개 API:
-
-- `GET /api/creatorflow2/invites/:token` — 제안 확인
-- `POST /api/creatorflow2/invites/:token/challenge` — 수락 또는 제출 서명 문구 발급
-- `POST /api/creatorflow2/invites/:token/complete` — 지갑 서명 확인 후 상태 변경
-
-지갑 위임·복구 API:
-
-- `POST /api/delegations/confirm` — 캠페인·브랜드 소유권·SPL approveChecked 검증
-- `POST /api/delegations/recovery` — 사람 지갑으로 활성 권한 조회
-- `POST /api/delegations/revoke/confirm` — AI 로그인 없이 owner 서명 revoke 확인
+상단 캠페인 요약과 하단 협상 작업대는 Worker/D1의 실제 등록 영상을 표시합니다. 현재 YouTube 공개 여부는 공식 oEmbed 응답으로 확인하며, Google OAuth 채널 소유권 검증과 Solana 거래는 다음 단계입니다.
 
 ## 개발
 
@@ -143,4 +113,4 @@ YouTube URL만으로는 에이전트가 만든 영상인지 확인할 수 없습
 - CreatorFlow stores public keys and signed challenges, never secret keys
 - milestone payment requests are idempotent
 
-상세 요구사항은 [CLE2-17](https://github.com/Daegu-Agent-Crew/creative-loop-engineering2/issues/46)에서 관리합니다.
+상세 요구사항은 [CLE2-16](https://daegu-agent-crew.github.io/creative-loop-engineering2/#/tasks/CLE2-16)에서 관리합니다.

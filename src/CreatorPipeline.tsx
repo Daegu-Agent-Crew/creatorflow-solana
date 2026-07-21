@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { getCreatorFlow2Pipeline, type CreatorFlow2Pipeline, type PipelineCreator, type PipelineStage } from './api'
-import { OfferComposer } from './OfferComposer'
 
 const columns: Array<{ stage: PipelineStage; label: string; empty: string }> = [
   { stage: 'proposed', label: '제안', empty: '새 제안 없음' },
@@ -35,7 +34,6 @@ export function CreatorPipeline({ onManage }: { onManage: () => void }) {
   const [selected, setSelected] = useState<PipelineCreator | null>(null)
   const [message, setMessage] = useState('')
   const [loading, setLoading] = useState(true)
-  const [composing, setComposing] = useState(false)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -64,8 +62,7 @@ export function CreatorPipeline({ onManage }: { onManage: () => void }) {
         </div>
         <div className="heading-actions">
           <button className="secondary-button" onClick={() => void refresh()}>새로고침</button>
-          <button className="secondary-button" onClick={onManage}>AI · 지갑 설정</button>
-          <button className="primary-button" onClick={() => setComposing(true)}>새 제안</button>
+          <button className="primary-button" onClick={onManage}>AI · 지갑 설정</button>
         </div>
       </header>
 
@@ -125,7 +122,6 @@ export function CreatorPipeline({ onManage }: { onManage: () => void }) {
           </aside>
         </div>
       ) : null}
-      {composing ? <OfferComposer campaignId={data?.campaign.id ?? null} onClose={() => setComposing(false)} onCreated={() => void refresh()} onManage={onManage} /> : null}
     </section>
   )
 }
